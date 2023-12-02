@@ -22,7 +22,6 @@ import (
 	"encoding/gob"
 	"errors"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -285,16 +284,12 @@ func LeaderboardRecordsList(ctx context.Context, logger *zap.Logger, db *sql.DB,
 		}
 	}
 
-	if ownerIds != nil && len(ownerIds) != 0 {
-		params := make([]interface{}, 0, len(ownerIds)+2)
-		params = append(params, leaderboardId, time.Unix(expiryTime, 0).UTC())
-		statements := make([]string, len(ownerIds))
-		for i, ownerID := range ownerIds {
-			params = append(params, ownerID)
-			statements[i] = "$" + strconv.Itoa(i+3)
-		}
+	if len(ownerIds) != 0 {
+		params := []any{leaderboardId, time.Unix(expiryTime, 0).UTC(), ownerIds}
+		query := `SELECT owner_id, username, score, subscore, num_score, max_num_score, metadata, create_time, update_time
+FROM leaderboard_record
+WHERE leaderboard_id = $1 AND expiry_time = $2 AND owner_id = ANY($3)`
 
-		query := "SELECT owner_id, username, score, subscore, num_score, max_num_score, metadata, create_time, update_time FROM leaderboard_record WHERE leaderboard_id = $1 AND expiry_time = $2 AND owner_id IN (" + strings.Join(statements, ", ") + ")"
 		rows, err := db.QueryContext(ctx, query, params...)
 		if err != nil {
 			logger.Error("Error reading leaderboard records", zap.Error(err))
@@ -735,37 +730,7 @@ func calculatePrevReset(currentTime time.Time, startTime int64, resetSchedule *c
 		return 0
 	}
 
-	nextResets := resetSchedule.NextN(currentTime, 2)
-	t1 := nextResets[0]
-	t2 := nextResets[1]
-
-	resetPeriod := t2.Sub(t1)
-	sTime := t1.Add(resetPeriod * -2) // start from twice the period between the next resets back in time
-
-	nextReset := resetSchedule.Next(currentTime)
-	if nextReset.IsZero() {
-		return 0
-	}
-
-	var prevReset time.Time
-	nextResets = resetSchedule.NextN(sTime, 2)
-	for i, r := range nextResets {
-		if r.Equal(nextReset) {
-			if i == 0 {
-				// No prev reset exists, next reset is the first to occur.
-				return 0
-			}
-			// Prev reset was found.
-			prevReset = nextResets[i-1]
-			break
-		}
-	}
-
-	if prevReset.IsZero() {
-		return 0
-	}
-
-	return prevReset.Unix()
+	return resetSchedule.Last(currentTime).Unix()
 }
 
 func getLeaderboardRecordsHaystack(ctx context.Context, logger *zap.Logger, db *sql.DB, leaderboardCache LeaderboardCache, rankCache LeaderboardRankCache, ownerID uuid.UUID, limit int, leaderboardId, cursor string, sortOrder int, expiryTime time.Time) (*api.LeaderboardRecordList, error) {

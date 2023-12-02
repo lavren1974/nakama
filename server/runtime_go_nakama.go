@@ -46,7 +46,6 @@ type RuntimeGoNakamaModule struct {
 	logger               *zap.Logger
 	db                   *sql.DB
 	protojsonMarshaler   *protojson.MarshalOptions
-	protojsonUnmarshaler *protojson.UnmarshalOptions
 	config               Config
 	socialClient         *social.Client
 	leaderboardCache     LeaderboardCache
@@ -405,7 +404,6 @@ func (n *RuntimeGoNakamaModule) AuthenticateSteam(ctx context.Context, token, us
 // @param vars(type=map[string]string, optional=true) Extra information that will be bundled in the session token.
 // @return token(string) The Nakama session token.
 // @return validity(int64) The period for which the token remains valid.
-// @return create(bool) Value indicating if this account was just created or already existed.
 // @return error(error) An optional error value if an error occurred.
 func (n *RuntimeGoNakamaModule) AuthenticateTokenGenerate(userID, username string, exp int64, vars map[string]string) (string, int64, error) {
 	if userID == "" {
@@ -425,8 +423,9 @@ func (n *RuntimeGoNakamaModule) AuthenticateTokenGenerate(userID, username strin
 		exp = time.Now().UTC().Add(time.Duration(n.config.GetSession().TokenExpirySec) * time.Second).Unix()
 	}
 
-	token, exp := generateTokenWithExpiry(n.config.GetSession().EncryptionKey, userID, username, vars, exp)
-	n.sessionCache.Add(uid, exp, token, 0, "")
+	tokenId := uuid.Must(uuid.NewV4()).String()
+	token, exp := generateTokenWithExpiry(n.config.GetSession().EncryptionKey, tokenId, userID, username, vars, exp)
+	n.sessionCache.Add(uid, exp, tokenId, 0, "")
 	return token, exp, nil
 }
 
@@ -1868,6 +1867,7 @@ func (n *RuntimeGoNakamaModule) WalletLedgerList(ctx context.Context, userID str
 // @group storage
 // @summary List records in a collection and page through results. The records returned can be filtered to those owned by the user or "" for public records.
 // @param ctx(type=context.Context) The context object represents information about the server and requester.
+// @param callerId(type=string, optional=true) User ID of the caller, will apply permissions checks of the user. If empty defaults to system user and permissions are bypassed.
 // @param userId(type=string) User ID to list records for or "" (empty string) for public records.
 // @param collection(type=string) Collection to list data from.
 // @param limit(type=int, optional=true, default=100) Limit number of records retrieved.
@@ -1875,7 +1875,16 @@ func (n *RuntimeGoNakamaModule) WalletLedgerList(ctx context.Context, userID str
 // @return objects([]*api.StorageObject) A list of storage objects.
 // @return cursor(string) Pagination cursor. Will be set to "" or nil when fetching last available page.
 // @return error(error) An optional error value if an error occurred.
-func (n *RuntimeGoNakamaModule) StorageList(ctx context.Context, userID, collection string, limit int, cursor string) ([]*api.StorageObject, string, error) {
+func (n *RuntimeGoNakamaModule) StorageList(ctx context.Context, callerID, userID, collection string, limit int, cursor string) ([]*api.StorageObject, string, error) {
+	cid := uuid.Nil
+	if callerID != "" {
+		u, err := uuid.FromString(callerID)
+		if err != nil {
+			return nil, "", errors.New("expects an empty or valid caller id")
+		}
+		cid = u
+	}
+
 	var uid *uuid.UUID
 	if userID != "" {
 		u, err := uuid.FromString(userID)
@@ -1889,7 +1898,7 @@ func (n *RuntimeGoNakamaModule) StorageList(ctx context.Context, userID, collect
 		return nil, "", errors.New("limit must not be negative")
 	}
 
-	objectList, _, err := StorageListObjects(ctx, n.logger, n.db, uuid.Nil, uid, collection, limit, cursor)
+	objectList, _, err := StorageListObjects(ctx, n.logger, n.db, cid, uid, collection, limit, cursor)
 	if err != nil {
 		return nil, "", err
 	}
@@ -2048,19 +2057,30 @@ func (n *RuntimeGoNakamaModule) StorageDelete(ctx context.Context, deletes []*ru
 // @group storage
 // @summary List storage index entries
 // @param indexName(type=string) Name of the index to list entries from.
+// @param callerId(type=string, optional=true) User ID of the caller, will apply permissions checks of the user. If empty defaults to system user and permissions are bypassed.
 // @param queryString(type=string) Query to filter index entries.
 // @param limit(type=int) Maximum number of results to be returned.
-// @return objects(*api..StorageObjectList) A list of storage objects.
+// @return objects(*api.StorageObjectList) A list of storage objects.
 // @return error(error) An optional error value if an error occurred.
-func (n *RuntimeGoNakamaModule) StorageIndexList(ctx context.Context, indexName, query string, limit int) (*api.StorageObjects, error) {
+func (n *RuntimeGoNakamaModule) StorageIndexList(ctx context.Context, callerID, indexName, query string, limit int) (*api.StorageObjects, error) {
+	cid := uuid.Nil
+	if callerID != "" {
+		id, err := uuid.FromString(callerID)
+		if err != nil {
+			return nil, errors.New("expects caller id to be empty or a valid user id")
+		}
+		cid = id
+	}
+
 	if indexName == "" {
 		return nil, errors.New("expects a non-empty indexName")
 	}
+
 	if limit < 1 || limit > 100 {
 		return nil, errors.New("limit must be 1-100")
 	}
 
-	return n.storageIndex.List(ctx, indexName, query, limit)
+	return n.storageIndex.List(ctx, cid, indexName, query, limit)
 }
 
 // @group users
@@ -2202,7 +2222,7 @@ func (n *RuntimeGoNakamaModule) LeaderboardCreate(ctx context.Context, id string
 		return errors.New("expects a leaderboard ID string")
 	}
 
-	sort := LeaderboardSortOrderDescending
+	sort := LeaderboardSortOrderDescending //nolint:ineffassign
 	switch sortOrder {
 	case "desc", "descending":
 		sort = LeaderboardSortOrderDescending
@@ -2212,7 +2232,7 @@ func (n *RuntimeGoNakamaModule) LeaderboardCreate(ctx context.Context, id string
 		return errors.New("expects sort order to be 'asc' or 'desc'")
 	}
 
-	oper := LeaderboardOperatorBest
+	oper := LeaderboardOperatorBest //nolint:ineffassign
 	switch operator {
 	case "best":
 		oper = LeaderboardOperatorBest
@@ -2339,6 +2359,64 @@ func (n *RuntimeGoNakamaModule) LeaderboardRecordsList(ctx context.Context, id s
 	}
 
 	return list.Records, list.OwnerRecords, list.NextCursor, list.PrevCursor, nil
+}
+
+// @group leaderboards
+// @summary Build a cursor to be used with leaderboardRecordsList to fetch records starting at a given rank. Only available if rank cache is not disabled for the leaderboard.
+// @param leaderboardID(type=string) The unique identifier of the leaderboard.
+// @param rank(type=int64) The rank to start listing leaderboard records from.
+// @param overrideExpiry(type=int64) Records with expiry in the past are not returned unless within this defined limit. Must be equal or greater than 0.
+// @return leaderboardListCursor(string) A string cursor to be used with leaderboardRecordsList.
+// @return error(error) An optional error value if an error occurred.
+func (n *RuntimeGoNakamaModule) LeaderboardRecordsListCursorFromRank(id string, rank, expiry int64) (string, error) {
+	if id == "" {
+		return "", errors.New("invalid leaderboard id")
+	}
+
+	if rank < 1 {
+		return "", errors.New("invalid rank - must be > 1")
+	}
+
+	if expiry < 0 {
+		return "", errors.New("expects expiry to equal or greater than 0")
+	}
+
+	l := n.leaderboardCache.Get(id)
+	if l == nil {
+		return "", ErrLeaderboardNotFound
+	}
+
+	expiryTime, ok := calculateExpiryOverride(expiry, l)
+	if !ok {
+		return "", errors.New("invalid expiry")
+	}
+
+	rank-- // Fetch previous entry to include requested rank in the results
+	if rank == 0 {
+		return "", nil
+	}
+
+	ownerId, score, subscore, err := n.leaderboardRankCache.GetDataByRank(id, expiryTime, l.SortOrder, rank)
+	if err != nil {
+		return "", fmt.Errorf("failed to get cursor from rank: %s", err.Error())
+	}
+
+	cursor := &leaderboardRecordListCursor{
+		IsNext:        true,
+		LeaderboardId: id,
+		ExpiryTime:    expiryTime,
+		Score:         score,
+		Subscore:      subscore,
+		OwnerId:       ownerId.String(),
+		Rank:          rank,
+	}
+
+	cursorStr, err := marshalLeaderboardRecordsListCursor(cursor)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal leaderboard cursor: %s", err.Error())
+	}
+
+	return cursorStr, nil
 }
 
 // @group leaderboards
@@ -2473,7 +2551,7 @@ func (n *RuntimeGoNakamaModule) TournamentCreate(ctx context.Context, id string,
 		return errors.New("expects a tournament ID string")
 	}
 
-	sort := LeaderboardSortOrderDescending
+	sort := LeaderboardSortOrderDescending //nolint:ineffassign
 	switch sortOrder {
 	case "desc", "descending":
 		sort = LeaderboardSortOrderDescending
@@ -2483,7 +2561,7 @@ func (n *RuntimeGoNakamaModule) TournamentCreate(ctx context.Context, id string,
 		return errors.New("expects sort order to be 'asc' or 'desc'")
 	}
 
-	oper := LeaderboardOperatorBest
+	oper := LeaderboardOperatorBest //nolint:ineffassign
 	switch operator {
 	case "best":
 		oper = LeaderboardOperatorBest
@@ -2924,6 +3002,36 @@ func (n *RuntimeGoNakamaModule) PurchaseValidateHuawei(ctx context.Context, user
 }
 
 // @group purchases
+// @summary Validates and stores a purchase receipt from Facebook Instant Games.
+// @param ctx(type=context.Context) The context object represents information about the server and requester.
+// @param userId(type=string) The user ID of the owner of the receipt.
+// @param signedRequest(type=string) The Facebook Instant signedRequest receipt data.
+// @param persist(type=bool) Persist the purchase so that seenBefore can be computed to protect against replay attacks.
+// @return validation(*api.ValidatePurchaseResponse) The resulting successfully validated purchases. Any previously validated purchases are returned with a seenBefore flag.
+// @return error(error) An optional error value if an error occurred.
+func (n *RuntimeGoNakamaModule) PurchaseValidateFacebookInstant(ctx context.Context, userID, signedRequest string, persist bool) (*api.ValidatePurchaseResponse, error) {
+	if n.config.GetIAP().FacebookInstant.AppSecret == "" {
+		return nil, errors.New("facebook instant IAP is not configured")
+	}
+
+	uid, err := uuid.FromString(userID)
+	if err != nil {
+		return nil, errors.New("user ID must be a valid id string")
+	}
+
+	if len(signedRequest) < 1 {
+		return nil, errors.New("signedRequest cannot be empty string")
+	}
+
+	validation, err := ValidatePurchaseFacebookInstant(ctx, n.logger, n.db, uid, n.config.GetIAP().FacebookInstant, signedRequest, persist)
+	if err != nil {
+		return nil, err
+	}
+
+	return validation, nil
+}
+
+// @group purchases
 // @summary List stored validated purchase receipts.
 // @param ctx(type=context.Context) The context object represents information about the server and requester.
 // @param userId(type=string) Filter by user ID. Can be an empty string to list purchases for all users.
@@ -3298,6 +3406,7 @@ func (n *RuntimeGoNakamaModule) GroupUserLeave(ctx context.Context, groupID, use
 // @group groups
 // @summary Add users to a group.
 // @param ctx(type=context.Context) The context object represents information about the server and requester.
+// @param callerId(type=string, optional=true) User ID of the caller, will apply permissions checks of the user. If empty defaults to system user and permissions are bypassed.
 // @param groupId(type=string) The ID of the group to add users to.
 // @param userIds(type=[]string) Table array of user IDs to add to this group.
 // @return error(error) An optional error value if an error occurred.
@@ -3306,7 +3415,7 @@ func (n *RuntimeGoNakamaModule) GroupUsersAdd(ctx context.Context, callerID, gro
 	if callerID != "" {
 		var err error
 		if caller, err = uuid.FromString(callerID); err != nil {
-			return errors.New("expects caller ID to be a valid identifier")
+			return errors.New("expects caller ID to be empty or a valid identifier")
 		}
 	}
 
@@ -3337,6 +3446,7 @@ func (n *RuntimeGoNakamaModule) GroupUsersAdd(ctx context.Context, callerID, gro
 // @group groups
 // @summary Ban users from a group.
 // @param ctx(type=context.Context) The context object represents information about the server and requester.
+// @param callerId(type=string, optional=true) User ID of the caller, will apply permissions checks of the user. If empty defaults to system user and permissions are bypassed.
 // @param groupId(type=string) The ID of the group to ban users from.
 // @param userIds(type=[]string) Table array of user IDs to ban from this group.
 // @return error(error) An optional error value if an error occurred.
@@ -3345,7 +3455,7 @@ func (n *RuntimeGoNakamaModule) GroupUsersBan(ctx context.Context, callerID, gro
 	if callerID != "" {
 		var err error
 		if caller, err = uuid.FromString(callerID); err != nil {
-			return errors.New("expects caller ID to be a valid identifier")
+			return errors.New("expects caller ID to be empty or a valid identifier")
 		}
 	}
 
@@ -3376,6 +3486,7 @@ func (n *RuntimeGoNakamaModule) GroupUsersBan(ctx context.Context, callerID, gro
 // @group groups
 // @summary Kick users from a group.
 // @param ctx(type=context.Context) The context object represents information about the server and requester.
+// @param callerId(type=string, optional=true) User ID of the caller, will apply permissions checks of the user. If empty defaults to system user and permissions are bypassed.
 // @param groupId(type=string) The ID of the group to kick users from.
 // @param userIds(type=[]string) Table array of user IDs to kick.
 // @return error(error) An optional error value if an error occurred.
@@ -3384,7 +3495,7 @@ func (n *RuntimeGoNakamaModule) GroupUsersKick(ctx context.Context, callerID, gr
 	if callerID != "" {
 		var err error
 		if caller, err = uuid.FromString(callerID); err != nil {
-			return errors.New("expects caller ID to be a valid identifier")
+			return errors.New("expects caller ID to be empty or a valid identifier")
 		}
 	}
 
@@ -3415,6 +3526,7 @@ func (n *RuntimeGoNakamaModule) GroupUsersKick(ctx context.Context, callerID, gr
 // @group groups
 // @summary Promote users in a group.
 // @param ctx(type=context.Context) The context object represents information about the server and requester.
+// @param callerId(type=string, optional=true) User ID of the caller, will apply permissions checks of the user. If empty defaults to system user and permissions are bypassed.
 // @param groupId(type=string) The ID of the group whose members are being promoted.
 // @param userIds(type=[]string) Table array of user IDs to promote.
 // @return error(error) An optional error value if an error occurred.
@@ -3423,7 +3535,7 @@ func (n *RuntimeGoNakamaModule) GroupUsersPromote(ctx context.Context, callerID,
 	if callerID != "" {
 		var err error
 		if caller, err = uuid.FromString(callerID); err != nil {
-			return errors.New("expects caller ID to be a valid identifier")
+			return errors.New("expects caller ID to be empty or a valid identifier")
 		}
 	}
 
@@ -3454,6 +3566,7 @@ func (n *RuntimeGoNakamaModule) GroupUsersPromote(ctx context.Context, callerID,
 // @group groups
 // @summary Demote users in a group.
 // @param ctx(type=context.Context) The context object represents information about the server and requester.
+// @param callerId(type=string, optional=true) User ID of the caller, will apply permissions checks of the user. If empty defaults to system user and permissions are bypassed.
 // @param groupId(type=string) The ID of the group whose members are being demoted.
 // @param userIds(type=[]string) Table array of user IDs to demote.
 // @return error(error) An optional error value if an error occurred.
@@ -3462,7 +3575,7 @@ func (n *RuntimeGoNakamaModule) GroupUsersDemote(ctx context.Context, callerID, 
 	if callerID != "" {
 		var err error
 		if caller, err = uuid.FromString(callerID); err != nil {
-			return errors.New("expects caller ID to be a valid identifier")
+			return errors.New("expects caller ID to be empty or a valid identifier")
 		}
 	}
 

@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -59,7 +60,9 @@ func NewSatoriClient(logger *zap.Logger, satoriUrl, apiKeyName, apiKey, signingK
 		tokenExpirySec: 3600,
 	}
 
-	if err := sc.validateConfig(); err != nil {
+	if sc.urlString == "" && sc.apiKeyName == "" && sc.apiKey == "" && sc.signingKey == "" {
+		sc.invalidConfig = true
+	} else if err := sc.validateConfig(); err != nil {
 		sc.invalidConfig = true
 		logger.Warn(err.Error())
 	}
@@ -69,18 +72,23 @@ func NewSatoriClient(logger *zap.Logger, satoriUrl, apiKeyName, apiKey, signingK
 
 func (s *SatoriClient) validateConfig() error {
 	errorStrings := make([]string, 0)
-	if s.url == nil {
-		_, err := url.Parse(s.urlString)
+	satoriUrl, err := url.Parse(s.urlString)
+	if err != nil {
 		errorStrings = append(errorStrings, fmt.Sprintf("Invalid URL: %s", err.Error()))
 	}
-	if s.apiKeyName == "" {
-		errorStrings = append(errorStrings, "api_key_name not set")
-	}
-	if s.apiKey == "" {
-		errorStrings = append(errorStrings, "api_key not set")
-	}
-	if s.signingKey == "" {
-		errorStrings = append(errorStrings, "signing_key not set")
+
+	if satoriUrl.String() != "" {
+		if s.apiKeyName == "" {
+			errorStrings = append(errorStrings, "api_key_name not set")
+		}
+		if s.apiKey == "" {
+			errorStrings = append(errorStrings, "api_key not set")
+		}
+		if s.signingKey == "" {
+			errorStrings = append(errorStrings, "signing_key not set")
+		}
+	} else if s.apiKeyName != "" || s.apiKey != "" || s.signingKey != "" {
+		errorStrings = append(errorStrings, "Satori configuration incomplete: url not set")
 	}
 
 	if len(errorStrings) > 0 {
@@ -134,8 +142,9 @@ type authenticateBody struct {
 // @summary Create a new identity.
 // @param ctx(type=context.Context) The context object represents information about the server and requester.
 // @param id(type=string) The identifier of the identity.
+// @param ipAddress(type=string, optional=true) An optional client IP address to pass on to Satori for geo-IP lookup.
 // @return error(error) An optional error value if an error occurred.
-func (s *SatoriClient) Authenticate(ctx context.Context, id string) error {
+func (s *SatoriClient) Authenticate(ctx context.Context, id string, ipAddress ...string) error {
 	if s.invalidConfig {
 		return runtime.ErrSatoriConfigurationInvalid
 	}
@@ -155,6 +164,13 @@ func (s *SatoriClient) Authenticate(ctx context.Context, id string) error {
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.SetBasicAuth(s.apiKey, "")
+	if len(ipAddress) > 0 && ipAddress[0] != "" {
+		if ipAddr := net.ParseIP(ipAddress[0]); ipAddr != nil {
+			req.Header.Set("X-Forwarded-For", ipAddr.String())
+		}
+	} else if ipAddr, ok := ctx.Value(runtime.RUNTIME_CTX_CLIENT_IP).(string); ok {
+		req.Header.Set("X-Forwarded-For", ipAddr)
+	}
 
 	res, err := s.httpc.Do(req)
 	if err != nil {

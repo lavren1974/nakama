@@ -44,6 +44,7 @@ func NewPartyPresenceList(maxSize int) *PartyPresenceList {
 		presences:     make([]*PartyPresenceListItem, 0, maxSize),
 		presenceMap:   make(map[uuid.UUID]string, maxSize),
 		presencesRead: &atomic.Value{},
+		reservedMap:   make(map[uuid.UUID]struct{}, maxSize),
 	}
 	m.presencesRead.Store(make([]*PartyPresenceListItem, 0, maxSize))
 	return m
@@ -107,9 +108,7 @@ func (m *PartyPresenceList) Join(joins []*Presence) ([]*Presence, error) {
 	}
 	if len(processed) > 0 {
 		presencesRead := make([]*PartyPresenceListItem, 0, len(m.presences))
-		for _, presence := range m.presences {
-			presencesRead = append(presencesRead, presence)
-		}
+		presencesRead = append(presencesRead, m.presences...)
 		m.presencesRead.Store(presencesRead)
 	}
 	m.Unlock()
@@ -140,9 +139,7 @@ func (m *PartyPresenceList) Leave(leaves []*Presence) ([]*Presence, []*Presence)
 	}
 	if len(processed) > 0 {
 		presencesRead := make([]*PartyPresenceListItem, 0, len(m.presences))
-		for _, presence := range m.presences {
-			presencesRead = append(presencesRead, presence)
-		}
+		presencesRead = append(presencesRead, m.presences...)
 		m.presencesRead.Store(presencesRead)
 	}
 	m.Unlock()

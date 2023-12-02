@@ -51,6 +51,7 @@ type Config interface {
 	GetIAP() *IAPConfig
 	GetGoogleAuth() *GoogleAuthConfig
 	GetSatori() *SatoriConfig
+	GetStorage() *StorageConfig
 
 	Clone() (Config, error)
 }
@@ -286,9 +287,6 @@ func CheckConfig(logger *zap.Logger, config Config) map[string]string {
 	if config.GetMatchmaker().MaxIntervals < 1 {
 		logger.Fatal("Matchmaker max intervals must be >= 1", zap.Int("matchmaker.max_intervals", config.GetMatchmaker().MaxIntervals))
 	}
-	if config.GetMatchmaker().BatchPoolSize < 1 {
-		logger.Fatal("Matchmaker batch pool size must be >= 1", zap.Int("matchmaker.batch_pool_size", config.GetMatchmaker().BatchPoolSize))
-	}
 	if config.GetMatchmaker().RevThreshold < 0 {
 		logger.Fatal("Matchmaker reverse matching threshold must be >= 0", zap.Int("matchmaker.rev_threshold", config.GetMatchmaker().RevThreshold))
 	}
@@ -365,7 +363,7 @@ func CheckConfig(logger *zap.Logger, config Config) map[string]string {
 		logger.Warn("WARNING: deprecated configuration parameter", zap.String("deprecated", "runtime.registry_size"), zap.String("param", "runtime.lua_registry_size"))
 		configWarnings["runtime.registry_size"] = "Deprecated configuration parameter"
 	}
-	if config.GetRuntime().ReadOnlyGlobals != true {
+	if !config.GetRuntime().ReadOnlyGlobals {
 		logger.Warn("WARNING: deprecated configuration parameter", zap.String("deprecated", "runtime.read_only_globals"), zap.String("param", "runtime.lua_read_only_globals"))
 		configWarnings["runtime.read_only_globals"] = "Deprecated configuration parameter"
 	}
@@ -456,6 +454,7 @@ type config struct {
 	IAP              *IAPConfig         `yaml:"iap" json:"iap" usage:"In-App Purchase settings."`
 	GoogleAuth       *GoogleAuthConfig  `yaml:"google_auth" json:"google_auth" usage:"Google's auth settings."`
 	Satori           *SatoriConfig      `yaml:"satori" json:"satori" usage:"Satori integration settings."`
+	Storage          *StorageConfig     `yaml:"storage" json:"storage" usage:"Storage settings."`
 }
 
 // NewConfig constructs a Config struct which represents server settings, and populates it with default values.
@@ -483,6 +482,7 @@ func NewConfig(logger *zap.Logger) *config {
 		IAP:              NewIAPConfig(),
 		GoogleAuth:       NewGoogleAuthConfig(),
 		Satori:           NewSatoriConfig(),
+		Storage:          NewStorageConfig(),
 	}
 }
 
@@ -501,6 +501,7 @@ func (c *config) Clone() (Config, error) {
 	configMatchmaker := *(c.Matchmaker)
 	configIAP := *(c.IAP)
 	configSatori := *(c.Satori)
+	configStorage := *(c.Storage)
 	configGoogleAuth := *(c.GoogleAuth)
 	nc := &config{
 		Name:             c.Name,
@@ -521,6 +522,7 @@ func (c *config) Clone() (Config, error) {
 		IAP:              &configIAP,
 		Satori:           &configSatori,
 		GoogleAuth:       &configGoogleAuth,
+		Storage:          &configStorage,
 	}
 	nc.Socket.CertPEMBlock = make([]byte, len(c.Socket.CertPEMBlock))
 	copy(nc.Socket.CertPEMBlock, c.Socket.CertPEMBlock)
@@ -617,6 +619,10 @@ func (c *config) GetGoogleAuth() *GoogleAuthConfig {
 
 func (c *config) GetSatori() *SatoriConfig {
 	return c.Satori
+}
+
+func (c *config) GetStorage() *StorageConfig {
+	return c.Storage
 }
 
 // LoggerConfig is configuration relevant to logging levels and output.
@@ -803,7 +809,7 @@ func NewSocialConfig() *SocialConfig {
 	}
 }
 
-// RuntimeConfig is configuration relevant to the Runtime Lua VM.
+// RuntimeConfig is configuration relevant to the Runtimes.
 type RuntimeConfig struct {
 	Environment        map[string]string `yaml:"-" json:"-"`
 	Env                []string          `yaml:"env" json:"env" usage:"Values to pass into Runtime as environment variables."`
@@ -862,7 +868,7 @@ func (r *RuntimeConfig) GetLuaRegistrySize() int {
 
 // Function to allow backwards compatibility for LuaReadOnlyGlobals config
 func (r *RuntimeConfig) GetLuaReadOnlyGlobals() bool {
-	if r.ReadOnlyGlobals != true {
+	if !r.ReadOnlyGlobals {
 		return r.ReadOnlyGlobals
 	}
 	return r.LuaReadOnlyGlobals
@@ -971,36 +977,36 @@ func NewLeaderboardConfig() *LeaderboardConfig {
 }
 
 type MatchmakerConfig struct {
-	MaxTickets    int  `yaml:"max_tickets" json:"max_tickets" usage:"Maximum number of concurrent matchmaking tickets allowed per session or party. Default 3."`
-	IntervalSec   int  `yaml:"interval_sec" json:"interval_sec" usage:"How quickly the matchmaker attempts to form matches, in seconds. Default 15."`
-	MaxIntervals  int  `yaml:"max_intervals" json:"max_intervals" usage:"How many intervals the matchmaker attempts to find matches at the max player count, before allowing min count. Default 2."`
-	BatchPoolSize int  `yaml:"batch_pool_size" json:"batch_pool_size" usage:"Number of concurrent indexing batches that will be allocated."`
-	RevPrecision  bool `yaml:"rev_precision" json:"rev_precision" usage:"Reverse matching precision. Default true."`
-	RevThreshold  int  `yaml:"rev_threshold" json:"rev_threshold" usage:"Reverse matching threshold. Default 1."`
+	MaxTickets   int  `yaml:"max_tickets" json:"max_tickets" usage:"Maximum number of concurrent matchmaking tickets allowed per session or party. Default 3."`
+	IntervalSec  int  `yaml:"interval_sec" json:"interval_sec" usage:"How quickly the matchmaker attempts to form matches, in seconds. Default 15."`
+	MaxIntervals int  `yaml:"max_intervals" json:"max_intervals" usage:"How many intervals the matchmaker attempts to find matches at the max player count, before allowing min count. Default 2."`
+	RevPrecision bool `yaml:"rev_precision" json:"rev_precision" usage:"Reverse matching precision. Default false."`
+	RevThreshold int  `yaml:"rev_threshold" json:"rev_threshold" usage:"Reverse matching threshold. Default 1."`
 }
 
 func NewMatchmakerConfig() *MatchmakerConfig {
 	return &MatchmakerConfig{
-		MaxTickets:    3,
-		IntervalSec:   15,
-		MaxIntervals:  2,
-		BatchPoolSize: 32,
-		RevPrecision:  false,
-		RevThreshold:  1,
+		MaxTickets:   3,
+		IntervalSec:  15,
+		MaxIntervals: 2,
+		RevPrecision: false,
+		RevThreshold: 1,
 	}
 }
 
 type IAPConfig struct {
-	Apple  *IAPAppleConfig  `yaml:"apple" json:"apple" usage:"Apple App Store purchase validation configuration."`
-	Google *IAPGoogleConfig `yaml:"google" json:"google" usage:"Google Play Store purchase validation configuration."`
-	Huawei *IAPHuaweiConfig `yaml:"huawei" json:"huawei" usage:"Huawei purchase validation configuration."`
+	Apple           *IAPAppleConfig           `yaml:"apple" json:"apple" usage:"Apple App Store purchase validation configuration."`
+	Google          *IAPGoogleConfig          `yaml:"google" json:"google" usage:"Google Play Store purchase validation configuration."`
+	Huawei          *IAPHuaweiConfig          `yaml:"huawei" json:"huawei" usage:"Huawei purchase validation configuration."`
+	FacebookInstant *IAPFacebookInstantConfig `yaml:"facebook_instant" json:"facebook_instant" usage:"Facebook Instant purchase validation configuration."`
 }
 
 func NewIAPConfig() *IAPConfig {
 	return &IAPConfig{
-		Apple:  &IAPAppleConfig{},
-		Google: &IAPGoogleConfig{},
-		Huawei: &IAPHuaweiConfig{},
+		Apple:           &IAPAppleConfig{},
+		Google:          &IAPGoogleConfig{},
+		Huawei:          &IAPHuaweiConfig{},
+		FacebookInstant: &IAPFacebookInstantConfig{},
 	}
 }
 
@@ -1062,6 +1068,10 @@ type IAPHuaweiConfig struct {
 	ClientSecret string `yaml:"client_secret" json:"client_secret" usage:"Huawei OAuth app client secret."`
 }
 
+type IAPFacebookInstantConfig struct {
+	AppSecret string `yaml:"app_secret" json:"app_secret" usage:"Facebook Instant OAuth app client secret."`
+}
+
 type GoogleAuthConfig struct {
 	CredentialsJSON string         `yaml:"credentials_json" json:"credentials_json" usage:"Google's Access Credentials."`
 	OAuthConfig     *oauth2.Config `yaml:"-" json:"-"`
@@ -1072,4 +1082,12 @@ func NewGoogleAuthConfig() *GoogleAuthConfig {
 		CredentialsJSON: "",
 		OAuthConfig:     nil,
 	}
+}
+
+type StorageConfig struct {
+	DisableIndexOnly bool `yaml:"disable_index_only" json:"disable_index_only" usage:"Override and disable 'index_only' storage indices config and fallback to reading from the database."`
+}
+
+func NewStorageConfig() *StorageConfig {
+	return &StorageConfig{}
 }

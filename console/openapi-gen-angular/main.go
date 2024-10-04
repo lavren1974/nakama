@@ -19,7 +19,6 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"regexp"
 	"strings"
@@ -335,7 +334,7 @@ func main() {
 		"exists":          func(s string) bool { return s != "" },
 	}
 
-	content, err := ioutil.ReadFile(*input)
+	content, err := os.ReadFile(*input)
 	if err != nil {
 		fmt.Printf("Unable to read file: %s\n", err)
 		return
@@ -382,9 +381,7 @@ func convertType(prefixesToRemove []string, convertRefToClassName func(string) s
 		switch prop.Type {
 		case "string":
 			return "string"
-		case "integer":
-			fallthrough
-		case "number":
+		case "integer", "number":
 			return "number"
 		case "boolean":
 			return "boolean"
@@ -392,9 +389,7 @@ func convertType(prefixesToRemove []string, convertRefToClassName func(string) s
 			switch prop.Items.Type {
 			case "string":
 				return "Array<string>"
-			case "integer":
-				fallthrough
-			case "number":
+			case "integer", "number":
 				return "Array<number>"
 			case "boolean":
 				return "Array<boolean>"
@@ -405,9 +400,7 @@ func convertType(prefixesToRemove []string, convertRefToClassName func(string) s
 			switch prop.AdditionalProperties.Type {
 			case "string":
 				return "Map<string, string>"
-			case "integer":
-				fallthrough
-			case "number":
+			case "integer", "number":
 				return "Map<string, number>"
 			case "boolean":
 				return "Map<string, boolean>"

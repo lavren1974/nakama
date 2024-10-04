@@ -75,7 +75,7 @@ type runtimeJavascriptNakamaModule struct {
 	metrics              Metrics
 	sessionRegistry      SessionRegistry
 	sessionCache         SessionCache
-	statusRegistry       *StatusRegistry
+	statusRegistry       StatusRegistry
 	matchRegistry        MatchRegistry
 	streamManager        StreamManager
 	router               MessageRouter
@@ -88,7 +88,7 @@ type runtimeJavascriptNakamaModule struct {
 	satori runtime.Satori
 }
 
-func NewRuntimeJavascriptNakamaModule(logger *zap.Logger, db *sql.DB, protojsonMarshaler *protojson.MarshalOptions, protojsonUnmarshaler *protojson.UnmarshalOptions, config Config, socialClient *social.Client, leaderboardCache LeaderboardCache, rankCache LeaderboardRankCache, storageIndex StorageIndex, localCache *RuntimeJavascriptLocalCache, leaderboardScheduler LeaderboardScheduler, sessionRegistry SessionRegistry, sessionCache SessionCache, statusRegistry *StatusRegistry, matchRegistry MatchRegistry, tracker Tracker, metrics Metrics, streamManager StreamManager, router MessageRouter, eventFn RuntimeEventCustomFunction, matchCreateFn RuntimeMatchCreateFunction) *runtimeJavascriptNakamaModule {
+func NewRuntimeJavascriptNakamaModule(logger *zap.Logger, db *sql.DB, protojsonMarshaler *protojson.MarshalOptions, protojsonUnmarshaler *protojson.UnmarshalOptions, config Config, socialClient *social.Client, leaderboardCache LeaderboardCache, rankCache LeaderboardRankCache, storageIndex StorageIndex, localCache *RuntimeJavascriptLocalCache, leaderboardScheduler LeaderboardScheduler, sessionRegistry SessionRegistry, sessionCache SessionCache, statusRegistry StatusRegistry, matchRegistry MatchRegistry, tracker Tracker, metrics Metrics, streamManager StreamManager, router MessageRouter, eventFn RuntimeEventCustomFunction, matchCreateFn RuntimeMatchCreateFunction) *runtimeJavascriptNakamaModule {
 	return &runtimeJavascriptNakamaModule{
 		ctx:                  context.Background(),
 		logger:               logger,
@@ -147,6 +147,7 @@ func (n *runtimeJavascriptNakamaModule) mappings(r *goja.Runtime) map[string]fun
 		"metricsGaugeSet":                      n.metricsGaugeSet(r),
 		"metricsTimerRecord":                   n.metricsTimerRecord(r),
 		"uuidv4":                               n.uuidV4(r),
+		"cronPrev":                             n.cronPrev(r),
 		"cronNext":                             n.cronNext(r),
 		"sqlExec":                              n.sqlExec(r),
 		"sqlQuery":                             n.sqlQuery(r),
@@ -226,6 +227,8 @@ func (n *runtimeJavascriptNakamaModule) mappings(r *goja.Runtime) map[string]fun
 		"notificationsSend":                    n.notificationsSend(r),
 		"notificationSendAll":                  n.notificationSendAll(r),
 		"notificationsDelete":                  n.notificationsDelete(r),
+		"notificationsGetId":                   n.notificationsGetId(r),
+		"notificationsDeleteId":                n.notificationsDeleteId(r),
 		"walletUpdate":                         n.walletUpdate(r),
 		"walletsUpdate":                        n.walletsUpdate(r),
 		"walletLedgerUpdate":                   n.walletLedgerUpdate(r),
@@ -238,6 +241,7 @@ func (n *runtimeJavascriptNakamaModule) mappings(r *goja.Runtime) map[string]fun
 		"leaderboardCreate":                    n.leaderboardCreate(r),
 		"leaderboardDelete":                    n.leaderboardDelete(r),
 		"leaderboardList":                      n.leaderboardList(r),
+		"leaderboardRanksDisable":              n.leaderboardRanksDisable(r),
 		"leaderboardRecordsList":               n.leaderboardRecordsList(r),
 		"leaderboardRecordsListCursorFromRank": n.leaderboardRecordsListCursorFromRank(r),
 		"leaderboardRecordWrite":               n.leaderboardRecordWrite(r),
@@ -259,6 +263,7 @@ func (n *runtimeJavascriptNakamaModule) mappings(r *goja.Runtime) map[string]fun
 		"tournamentAddAttempt":                 n.tournamentAddAttempt(r),
 		"tournamentJoin":                       n.tournamentJoin(r),
 		"tournamentList":                       n.tournamentList(r),
+		"tournamentsRanksDisable":              n.tournamentRanksDisable(r),
 		"tournamentsGetId":                     n.tournamentsGetId(r),
 		"tournamentRecordsList":                n.tournamentRecordsList(r),
 		"tournamentRecordWrite":                n.tournamentRecordWrite(r),
@@ -272,6 +277,7 @@ func (n *runtimeJavascriptNakamaModule) mappings(r *goja.Runtime) map[string]fun
 		"groupUsersList":                       n.groupUsersList(r),
 		"userGroupsList":                       n.userGroupsList(r),
 		"friendsList":                          n.friendsList(r),
+		"friendsOfFriendsList":                 n.friendsOfFriendsList(r),
 		"friendsAdd":                           n.friendsAdd(r),
 		"friendsDelete":                        n.friendsDelete(r),
 		"friendsBlock":                         n.friendsBlock(r),
@@ -348,6 +354,7 @@ func (n *runtimeJavascriptNakamaModule) stringToBinary(r *goja.Runtime) func(goj
 // @param indexName(type=string) Name of the index to list entries from.
 // @param queryString(type=string) Query to filter index entries.
 // @param limit(type=int) Maximum number of results to be returned.
+// @param order(type=[]string, optional=true) The storage object fields to sort the query results by. The prefix '-' before a field name indicates descending order. All specified fields must be indexed and sortable.
 // @param callerId(type=string, optional=true) User ID of the caller, will apply permissions checks of the user. If empty defaults to system user and permission checks are bypassed.
 // @return objects(nkruntime.StorageObjectList) A list of storage objects.
 // @return error(error) An optional error value if an error occurred.
@@ -358,13 +365,24 @@ func (n *runtimeJavascriptNakamaModule) storageIndexList(r *goja.Runtime) func(g
 		limit := 100
 		if !goja.IsUndefined(f.Argument(2)) && !goja.IsNull(f.Argument(2)) {
 			limit = int(getJsInt(r, f.Argument(2)))
-			if limit < 1 || limit > 100 {
-				panic(r.NewTypeError("limit must be 1-100"))
+			if limit < 1 || limit > 10_000 {
+				panic(r.NewTypeError("limit must be 1-10000"))
 			}
 		}
+
+		var err error
+		order := make([]string, 0)
+		orderIn := f.Argument(3)
+		if !goja.IsUndefined(orderIn) && !goja.IsNull(orderIn) {
+			order, err = exportToSlice[[]string](orderIn)
+			if err != nil {
+				panic(r.NewTypeError("expects an array of strings"))
+			}
+		}
+
 		callerID := uuid.Nil
-		if !goja.IsUndefined(f.Argument(3)) && !goja.IsNull(f.Argument(3)) {
-			callerIdStr := getJsString(r, f.Argument(3))
+		if !goja.IsUndefined(f.Argument(4)) && !goja.IsNull(f.Argument(4)) {
+			callerIdStr := getJsString(r, f.Argument(4))
 			cid, err := uuid.FromString(callerIdStr)
 			if err != nil {
 				panic(r.NewTypeError("expects caller id to be valid identifier"))
@@ -372,7 +390,7 @@ func (n *runtimeJavascriptNakamaModule) storageIndexList(r *goja.Runtime) func(g
 			callerID = cid
 		}
 
-		objectList, err := n.storageIndex.List(n.ctx, callerID, idxName, queryString, int(limit))
+		objectList, err := n.storageIndex.List(n.ctx, callerID, idxName, queryString, int(limit), order)
 		if err != nil {
 			panic(r.NewGoError(fmt.Errorf("failed to lookup storage index: %s", err.Error())))
 		}
@@ -526,7 +544,31 @@ func (n *runtimeJavascriptNakamaModule) cronNext(r *goja.Runtime) func(goja.Func
 }
 
 // @group utils
-// @summary Execute an arbitrary SQL query and return the number of rows affected. Typically an "INSERT", "DELETE", or "UPDATE" statement with no return columns.
+// @summary Parses a CRON expression and a timestamp in UTC seconds, and returns the previous matching timestamp in UTC seconds.
+// @param expression(type=string) A valid CRON expression in standard format, for example "0 0 * * *" (meaning at midnight).
+// @param timestamp(type=number) A time value expressed as UTC seconds.
+// @return prev_ts(number) The previous UTC seconds timestamp (number) that matches the given CRON expression, and is immediately before the given timestamp.
+// @return error(error) An optional error value if an error occurred.
+func (n *runtimeJavascriptNakamaModule) cronPrev(r *goja.Runtime) func(goja.FunctionCall) goja.Value {
+	return func(f goja.FunctionCall) goja.Value {
+		cron := getJsString(r, f.Argument(0))
+		ts := getJsInt(r, f.Argument(1))
+
+		expr, err := cronexpr.Parse(cron)
+		if err != nil {
+			panic(r.NewTypeError("expects a valid cron string"))
+		}
+
+		t := time.Unix(ts, 0).UTC()
+		next := expr.Last(t)
+		nextTs := next.UTC().Unix()
+
+		return r.ToValue(nextTs)
+	}
+}
+
+// @group utils
+// @summary Execute an arbitrary SQL query and return the number of rows affected. Typically, an "INSERT", "DELETE", or "UPDATE" statement with no return columns.
 // @param query(type=string) A SQL query to execute.
 // @param parameters(type=any[]) Arbitrary parameters to pass to placeholders in the query.
 // @return rowsAffected(number) A list of matches matching the parameters criteria.
@@ -539,7 +581,7 @@ func (n *runtimeJavascriptNakamaModule) sqlExec(r *goja.Runtime) func(goja.Funct
 			args = make([]interface{}, 0)
 		} else {
 			var ok bool
-			args, ok = f.Argument(1).Export().([]interface{})
+			args, ok = f.Argument(1).Export().([]any)
 			if !ok {
 				panic(r.NewTypeError("expects array of query params"))
 			}
@@ -580,7 +622,7 @@ func (n *runtimeJavascriptNakamaModule) sqlQuery(r *goja.Runtime) func(goja.Func
 			args = make([]interface{}, 0)
 		} else {
 			var ok bool
-			args, ok = f.Argument(1).Export().([]interface{})
+			args, ok = f.Argument(1).Export().([]any)
 			if !ok {
 				panic(r.NewTypeError("expects array of query params"))
 			}
@@ -1524,14 +1566,14 @@ func (n *runtimeJavascriptNakamaModule) authenticateFacebook(r *goja.Runtime) fu
 			create = getJsBool(r, f.Argument(3))
 		}
 
-		dbUserID, dbUsername, created, importFriendsPossible, err := AuthenticateFacebook(n.ctx, n.logger, n.db, n.socialClient, n.config.GetSocial().FacebookLimitedLogin.AppId, token, username, create)
+		dbUserID, dbUsername, created, err := AuthenticateFacebook(n.ctx, n.logger, n.db, n.socialClient, n.config.GetSocial().FacebookLimitedLogin.AppId, token, username, create)
 		if err != nil {
 			panic(r.NewGoError(fmt.Errorf("error authenticating: %v", err.Error())))
 		}
 
-		if importFriends && importFriendsPossible {
+		if importFriends {
 			// Errors are logged before this point and failure here does not invalidate the whole operation.
-			_ = importFacebookFriends(n.ctx, n.logger, n.db, n.router, n.socialClient, uuid.FromStringOrNil(dbUserID), dbUsername, token, false)
+			_ = importFacebookFriends(n.ctx, n.logger, n.db, n.tracker, n.router, n.socialClient, uuid.FromStringOrNil(dbUserID), dbUsername, token, false)
 		}
 
 		return r.ToValue(map[string]interface{}{
@@ -1760,7 +1802,7 @@ func (n *runtimeJavascriptNakamaModule) authenticateSteam(r *goja.Runtime) func(
 		// Import friends if requested.
 		if importFriends {
 			// Errors are logged before this point and failure here does not invalidate the whole operation.
-			_ = importSteamFriends(n.ctx, n.logger, n.db, n.router, n.socialClient, uuid.FromStringOrNil(dbUserID), dbUsername, n.config.GetSocial().Steam.PublisherKey, steamID, false)
+			_ = importSteamFriends(n.ctx, n.logger, n.db, n.tracker, n.router, n.socialClient, uuid.FromStringOrNil(dbUserID), dbUsername, n.config.GetSocial().Steam.PublisherKey, steamID, false)
 		}
 
 		return r.ToValue(map[string]interface{}{
@@ -1859,27 +1901,19 @@ func (n *runtimeJavascriptNakamaModule) accountGetId(r *goja.Runtime) func(goja.
 // @return error(error) An optional error value if an error occurred.
 func (n *runtimeJavascriptNakamaModule) accountsGetId(r *goja.Runtime) func(goja.FunctionCall) goja.Value {
 	return func(f goja.FunctionCall) goja.Value {
-		var input []interface{}
-		if f.Argument(0) == goja.Undefined() {
-			panic(r.NewTypeError("expects list of user ids"))
-		} else {
-			var ok bool
-			input, ok = f.Argument(0).Export().([]interface{})
-			if !ok {
-				panic(r.NewTypeError("Invalid argument - user ids must be an array."))
-			}
+		input := f.Argument(0)
+		if input == goja.Undefined() || input == goja.Null() {
+			panic(r.NewTypeError("expects an array of user ids"))
 		}
 
-		userIDs := make([]string, 0, len(input))
-		for _, userID := range input {
-			id, ok := userID.(string)
-			if !ok {
-				panic(r.NewTypeError(fmt.Sprintf("invalid user id: %v - must be a string", userID)))
+		userIDs, err := exportToSlice[[]string](input)
+		if err != nil {
+			panic(r.NewTypeError("expects an array of strings"))
+		}
+		for _, uid := range userIDs {
+			if _, err := uuid.FromString(uid); err != nil {
+				panic(r.NewTypeError(fmt.Sprintf("invalid user id: %s", uid)))
 			}
-			if _, err := uuid.FromString(id); err != nil {
-				panic(r.NewTypeError(fmt.Sprintf("invalid user id: %v", userID)))
-			}
-			userIDs = append(userIDs, id)
 		}
 
 		accounts, err := GetAccounts(n.ctx, n.logger, n.db, n.statusRegistry, userIDs)
@@ -2037,40 +2071,28 @@ func (n *runtimeJavascriptNakamaModule) accountExportId(r *goja.Runtime) func(go
 func (n *runtimeJavascriptNakamaModule) usersGetId(r *goja.Runtime) func(goja.FunctionCall) goja.Value {
 	return func(f goja.FunctionCall) goja.Value {
 		var userIds []string
-		if f.Argument(0) != goja.Undefined() && f.Argument(0) != goja.Null() {
-			var ok bool
-			userIdsIn, ok := f.Argument(0).Export().([]interface{})
-			if !ok {
-				panic(r.NewTypeError("Invalid argument - user ids must be an array."))
+		userIdsIn := f.Argument(0)
+		if userIdsIn != goja.Undefined() && userIdsIn != goja.Null() {
+			var err error
+			userIds, err = exportToSlice[[]string](userIdsIn)
+			if err != nil {
+				panic(r.NewTypeError("expects an array of strings"))
 			}
-			uIds := make([]string, 0, len(userIdsIn))
-			for _, userID := range userIdsIn {
-				id, ok := userID.(string)
-				if !ok {
-					panic(r.NewTypeError(fmt.Sprintf("invalid user id: %v - must be a string", userID)))
-				} else if _, err := uuid.FromString(id); err != nil {
+			for _, userID := range userIds {
+				if _, err = uuid.FromString(userID); err != nil {
 					panic(r.NewTypeError(fmt.Sprintf("invalid user id: %v", userID)))
 				}
-				uIds = append(uIds, id)
 			}
-			userIds = uIds
 		}
 
 		var facebookIds []string
-		if f.Argument(1) != goja.Undefined() && f.Argument(1) != goja.Null() {
-			facebookIdsIn, ok := f.Argument(1).Export().([]interface{})
-			if !ok {
-				panic(r.NewTypeError("Invalid argument - facebook ids must be an array."))
+		facebookIdsIn := f.Argument(1)
+		if facebookIdsIn != goja.Undefined() && facebookIdsIn != goja.Null() {
+			var err error
+			facebookIds, err = exportToSlice[[]string](facebookIdsIn)
+			if err != nil {
+				panic(r.NewTypeError("expects an array of strings"))
 			}
-			fIds := make([]string, 0, len(facebookIdsIn))
-			for _, fIdIn := range facebookIdsIn {
-				fId, ok := fIdIn.(string)
-				if !ok {
-					panic(r.NewTypeError("Invalid argument - facebook id must be a string"))
-				}
-				fIds = append(fIds, fId)
-			}
-			facebookIds = fIds
 		}
 
 		if userIds == nil && facebookIds == nil {
@@ -2082,7 +2104,7 @@ func (n *runtimeJavascriptNakamaModule) usersGetId(r *goja.Runtime) func(goja.Fu
 			panic(r.NewGoError(fmt.Errorf("failed to get users: %s", err.Error())))
 		}
 
-		usersData := make([]map[string]interface{}, 0, len(users.Users))
+		usersData := make([]map[string]any, 0, len(users.Users))
 		for _, user := range users.Users {
 			userData, err := userToJsObject(user)
 			if err != nil {
@@ -2102,24 +2124,14 @@ func (n *runtimeJavascriptNakamaModule) usersGetId(r *goja.Runtime) func(goja.Fu
 // @return error(error) An optional error value if an error occurred.
 func (n *runtimeJavascriptNakamaModule) usersGetUsername(r *goja.Runtime) func(goja.FunctionCall) goja.Value {
 	return func(f goja.FunctionCall) goja.Value {
-		var input []interface{}
-		if f.Argument(0) == goja.Undefined() {
-			panic(r.NewTypeError("expects list of usernames"))
-		} else {
-			var ok bool
-			input, ok = f.Argument(0).Export().([]interface{})
-			if !ok {
-				panic(r.NewTypeError("Invalid argument - usernames must be an array."))
-			}
+		usernamesIn := f.Argument(0)
+		if usernamesIn == goja.Undefined() || usernamesIn == goja.Null() {
+			panic(r.NewTypeError("expects an array of usernames"))
 		}
 
-		usernames := make([]string, 0, len(input))
-		for _, userID := range input {
-			id, ok := userID.(string)
-			if !ok {
-				panic(r.NewTypeError(fmt.Sprintf("invalid username: %v - must be a string", userID)))
-			}
-			usernames = append(usernames, id)
+		usernames, err := exportToSlice[[]string](usernamesIn)
+		if err != nil {
+			panic(r.NewTypeError("expects an array of strings"))
 		}
 
 		users, err := GetUsers(n.ctx, n.logger, n.db, n.statusRegistry, nil, usernames, nil)
@@ -2177,32 +2189,26 @@ func (n *runtimeJavascriptNakamaModule) usersGetRandom(r *goja.Runtime) func(goj
 // @return error(error) An optional error value if an error occurred.
 func (n *runtimeJavascriptNakamaModule) usersBanId(r *goja.Runtime) func(goja.FunctionCall) goja.Value {
 	return func(f goja.FunctionCall) goja.Value {
-		var input []interface{}
-		if f.Argument(0) == goja.Undefined() {
-			panic(r.NewTypeError("expects list of user ids"))
-		} else {
-			var ok bool
-			input, ok = f.Argument(0).Export().([]interface{})
-			if !ok {
-				panic(r.NewTypeError("Invalid argument - user ids must be an array."))
-			}
+		userIdsIn := f.Argument(0)
+		if userIdsIn == goja.Undefined() || userIdsIn == goja.Null() {
+			panic(r.NewTypeError("expects array of user ids"))
 		}
 
-		userIDs := make([]uuid.UUID, 0, len(input))
-		for _, userID := range input {
-			id, ok := userID.(string)
-			if !ok {
-				panic(r.NewTypeError(fmt.Sprintf("invalid user id: %v - must be a string", userID)))
-			}
+		userIds, err := exportToSlice[[]string](userIdsIn)
+		if err != nil {
+			panic(r.NewTypeError("expects an array of strings"))
+		}
+
+		uids := make([]uuid.UUID, 0, len(userIds))
+		for _, id := range userIds {
 			uid, err := uuid.FromString(id)
 			if err != nil {
-				panic(r.NewTypeError(fmt.Sprintf("invalid user id: %v", userID)))
+				panic(r.NewTypeError(fmt.Sprintf("invalid user id: %v", id)))
 			}
-			userIDs = append(userIDs, uid)
+			uids = append(uids, uid)
 		}
 
-		err := BanUsers(n.ctx, n.logger, n.db, n.config, n.sessionCache, n.sessionRegistry, n.tracker, userIDs)
-		if err != nil {
+		if err = BanUsers(n.ctx, n.logger, n.db, n.config, n.sessionCache, n.sessionRegistry, n.tracker, uids); err != nil {
 			panic(r.NewGoError(fmt.Errorf("failed to ban users: %s", err.Error())))
 		}
 
@@ -2216,32 +2222,26 @@ func (n *runtimeJavascriptNakamaModule) usersBanId(r *goja.Runtime) func(goja.Fu
 // @return error(error) An optional error value if an error occurred.
 func (n *runtimeJavascriptNakamaModule) usersUnbanId(r *goja.Runtime) func(goja.FunctionCall) goja.Value {
 	return func(f goja.FunctionCall) goja.Value {
-		var input []interface{}
-		if f.Argument(0) == goja.Undefined() {
-			panic(r.NewTypeError("expects list of user ids"))
-		} else {
-			var ok bool
-			input, ok = f.Argument(0).Export().([]interface{})
-			if !ok {
-				panic(r.NewTypeError("Invalid argument - user ids must be an array."))
-			}
+		userIdsIn := f.Argument(0)
+		if userIdsIn == goja.Undefined() || userIdsIn == goja.Null() {
+			panic(r.NewTypeError("expects array of user ids"))
 		}
 
-		userIDs := make([]uuid.UUID, 0, len(input))
-		for _, userID := range input {
-			id, ok := userID.(string)
-			if !ok {
-				panic(r.NewTypeError(fmt.Sprintf("invalid user id: %v - must be a string", userID)))
-			}
+		userIds, err := exportToSlice[[]string](userIdsIn)
+		if err != nil {
+			panic(r.NewTypeError("expects an array of strings"))
+		}
+
+		uids := make([]uuid.UUID, 0, len(userIds))
+		for _, id := range userIds {
 			uid, err := uuid.FromString(id)
 			if err != nil {
-				panic(r.NewTypeError(fmt.Sprintf("invalid user id: %v", userID)))
+				panic(r.NewTypeError(fmt.Sprintf("invalid user id: %v", id)))
 			}
-			userIDs = append(userIDs, uid)
+			uids = append(uids, uid)
 		}
 
-		err := UnbanUsers(n.ctx, n.logger, n.db, n.sessionCache, userIDs)
-		if err != nil {
+		if err = UnbanUsers(n.ctx, n.logger, n.db, n.sessionCache, uids); err != nil {
 			panic(r.NewGoError(fmt.Errorf("failed to unban users: %s", err.Error())))
 		}
 
@@ -2386,7 +2386,7 @@ func (n *runtimeJavascriptNakamaModule) linkFacebook(r *goja.Runtime) func(goja.
 			importFriends = getJsBool(r, f.Argument(3))
 		}
 
-		if err := LinkFacebook(n.ctx, n.logger, n.db, n.socialClient, n.router, id, username, n.config.GetSocial().FacebookLimitedLogin.AppId, token, importFriends); err != nil {
+		if err := LinkFacebook(n.ctx, n.logger, n.db, n.socialClient, n.tracker, n.router, id, username, n.config.GetSocial().FacebookLimitedLogin.AppId, token, importFriends); err != nil {
 			panic(r.NewGoError(fmt.Errorf("error linking: %v", err.Error())))
 		}
 
@@ -2525,7 +2525,7 @@ func (n *runtimeJavascriptNakamaModule) linkSteam(r *goja.Runtime) func(goja.Fun
 			importFriends = getJsBool(r, f.Argument(3))
 		}
 
-		if err := LinkSteam(n.ctx, n.logger, n.db, n.config, n.socialClient, n.router, id, username, token, importFriends); err != nil {
+		if err := LinkSteam(n.ctx, n.logger, n.db, n.config, n.socialClient, n.tracker, n.router, id, username, token, importFriends); err != nil {
 			panic(r.NewGoError(fmt.Errorf("error linking: %v", err.Error())))
 		}
 
@@ -3227,23 +3227,19 @@ func (n *runtimeJavascriptNakamaModule) streamSend(r *goja.Runtime) func(goja.Fu
 		data := getJsString(r, f.Argument(1))
 
 		presencesIn := f.Argument(2)
-		var presences []interface{}
+		var presences []map[string]any
 		if presencesIn == goja.Undefined() || presencesIn == goja.Null() {
-			presences = make([]interface{}, 0)
+			presences = make([]map[string]any, 0)
 		} else {
-			presences, ok = presencesIn.Export().([]interface{})
-			if !ok {
-				panic(r.NewTypeError("expects a presences array"))
+			var err error
+			presences, err = exportToSlice[[]map[string]any](presencesIn)
+			if err != nil {
+				panic(r.NewTypeError("expects an array of presence objects"))
 			}
 		}
 
 		presenceIDs := make([]*PresenceID, 0, len(presences))
-		for _, presenceRaw := range presences {
-			presence, ok := presenceRaw.(map[string]interface{})
-			if !ok {
-				panic(r.NewTypeError("expects a presence object"))
-			}
-
+		for _, presence := range presences {
 			presenceID := &PresenceID{}
 			sessionIdRaw, ok := presence["sessionId"]
 			if ok {
@@ -3339,23 +3335,18 @@ func (n *runtimeJavascriptNakamaModule) streamSendRaw(r *goja.Runtime) func(goja
 		}
 
 		presencesIn := f.Argument(2)
-		var presences []interface{}
+		var presences []map[string]any
 		if presencesIn == goja.Undefined() || presencesIn == goja.Null() {
-			presences = make([]interface{}, 0)
+			presences = make([]map[string]any, 0)
 		} else {
-			presences, ok = presencesIn.Export().([]interface{})
-			if !ok {
+			presences, err = exportToSlice[[]map[string]any](presencesIn)
+			if err != nil {
 				panic(r.NewTypeError("expects a presences array"))
 			}
 		}
 
 		presenceIDs := make([]*PresenceID, 0, len(presences))
-		for _, presenceRaw := range presences {
-			presence, ok := presenceRaw.(map[string]interface{})
-			if !ok {
-				panic(r.NewTypeError("expects a presence object"))
-			}
-
+		for _, presence := range presences {
 			presenceID := &PresenceID{}
 			sessionIdRaw, ok := presence["sessionId"]
 			if ok {
@@ -3547,7 +3538,7 @@ func (n *runtimeJavascriptNakamaModule) matchGet(r *goja.Runtime) func(goja.Func
 // @group matches
 // @summary List currently running realtime multiplayer matches and optionally filter them by authoritative mode, label, and current participant count.
 // @param limit(type=number, optional=true, default=1) The maximum number of matches to list.
-// @param authoritative(type=bool, optional=true, default=false) Set true to only return authoritative matches, false to only return relayed matches.
+// @param authoritative(type=bool, optional=true, default=nil) Set true to only return authoritative matches, false to only return relayed matches and nil to return both.
 // @param label(type=string, optional=true, default="") A label to filter authoritative matches by. Default "" meaning any label matches.
 // @param minSize(type=number, optional=true) Inclusive lower limit of current match participants.
 // @param maxSize(type=number, optional=true) Inclusive upper limit of current match participants.
@@ -3704,7 +3695,7 @@ func (n *runtimeJavascriptNakamaModule) notificationSend(r *goja.Runtime) func(g
 			userID: nots,
 		}
 
-		if err := NotificationSend(n.ctx, n.logger, n.db, n.router, notifications); err != nil {
+		if err := NotificationSend(n.ctx, n.logger, n.db, n.tracker, n.router, notifications); err != nil {
 			panic(fmt.Sprintf("failed to send notifications: %s", err.Error()))
 		}
 
@@ -3719,22 +3710,17 @@ func (n *runtimeJavascriptNakamaModule) notificationSend(r *goja.Runtime) func(g
 func (n *runtimeJavascriptNakamaModule) notificationsSend(r *goja.Runtime) func(goja.FunctionCall) goja.Value {
 	return func(f goja.FunctionCall) goja.Value {
 		notificationsIn := f.Argument(0)
-		if notificationsIn == goja.Undefined() {
-			panic(r.NewTypeError("expects a valid set of notifications"))
+		if notificationsIn == goja.Undefined() || notificationsIn == goja.Null() {
+			panic(r.NewTypeError("expects a valid array of notifications"))
 		}
 
-		notificationsSlice, ok := notificationsIn.Export().([]interface{})
-		if !ok {
+		notificationsSlice, err := exportToSlice[[]map[string]any](notificationsIn)
+		if err != nil {
 			panic(r.NewTypeError("expects notifications to be an array"))
 		}
 
 		notifications := make(map[uuid.UUID][]*api.Notification)
-		for _, notificationRaw := range notificationsSlice {
-			notificationObj, ok := notificationRaw.(map[string]interface{})
-			if !ok {
-				panic(r.NewTypeError("expects notification to be an object"))
-			}
-
+		for _, notificationObj := range notificationsSlice {
 			notification := &api.Notification{}
 			userID := uuid.Nil
 			senderID := uuid.Nil
@@ -3791,11 +3777,11 @@ func (n *runtimeJavascriptNakamaModule) notificationsSend(r *goja.Runtime) func(
 			if _, ok := notificationObj["senderId"]; ok {
 				senderIDStr, ok := notificationObj["senderId"].(string)
 				if !ok {
-					panic(r.NewTypeError("expects 'userId' value to be a string"))
+					panic(r.NewTypeError("expects 'senderId' value to be a string"))
 				}
 				uid, err := uuid.FromString(senderIDStr)
 				if err != nil {
-					panic(r.NewTypeError("expects 'userId' value to be a valid id"))
+					panic(r.NewTypeError("expects 'senderId' value to be a valid id"))
 				}
 				senderID = uid
 			}
@@ -3822,7 +3808,7 @@ func (n *runtimeJavascriptNakamaModule) notificationsSend(r *goja.Runtime) func(
 			notifications[userID] = no
 		}
 
-		if err := NotificationSend(n.ctx, n.logger, n.db, n.router, notifications); err != nil {
+		if err := NotificationSend(n.ctx, n.logger, n.db, n.tracker, n.router, notifications); err != nil {
 			panic(r.NewGoError(fmt.Errorf("failed to send notifications: %s", err.Error())))
 		}
 
@@ -3896,22 +3882,17 @@ func (n *runtimeJavascriptNakamaModule) notificationSendAll(r *goja.Runtime) fun
 func (n *runtimeJavascriptNakamaModule) notificationsDelete(r *goja.Runtime) func(goja.FunctionCall) goja.Value {
 	return func(f goja.FunctionCall) goja.Value {
 		notificationsIn := f.Argument(0)
-		if notificationsIn == goja.Undefined() {
-			panic(r.NewTypeError("expects a valid set of notifications"))
+		if notificationsIn == goja.Undefined() || notificationsIn == goja.Null() {
+			panic(r.NewTypeError("expects a valid array of notifications"))
 		}
 
-		notificationsSlice, ok := notificationsIn.Export().([]interface{})
-		if !ok {
+		notificationsSlice, err := exportToSlice[[]map[string]any](notificationsIn)
+		if err != nil {
 			panic(r.NewTypeError("expects notifications to be an array"))
 		}
 
 		notifications := make(map[uuid.UUID][]string)
-		for _, notificationRaw := range notificationsSlice {
-			notificationObj, ok := notificationRaw.(map[string]interface{})
-			if !ok {
-				panic(r.NewTypeError("expects notification to be an object"))
-			}
-
+		for _, notificationObj := range notificationsSlice {
 			userID := uuid.Nil
 			notificationIDStr := ""
 
@@ -3950,6 +3931,108 @@ func (n *runtimeJavascriptNakamaModule) notificationsDelete(r *goja.Runtime) fun
 			if err := NotificationDelete(n.ctx, n.logger, n.db, uid, notificationIDs); err != nil {
 				panic(r.NewGoError(fmt.Errorf("failed to delete notifications: %s", err.Error())))
 			}
+		}
+
+		return goja.Undefined()
+	}
+}
+
+// @group notifications
+// @summary Get notifications by their id.
+// @param ctx(type=context.Context) The context object represents information about the server and requester.
+// @param ids(type=string[]) A list of notification ids.
+// @param userID(type=string) Optional userID to scope results to that user only.
+// @return notifications(type=runtime.Notification[]) A list of notifications.
+// @return error(error) An optional error value if an error occurred.
+func (n *runtimeJavascriptNakamaModule) notificationsGetId(r *goja.Runtime) func(goja.FunctionCall) goja.Value {
+	return func(f goja.FunctionCall) goja.Value {
+		notifIdsIn := f.Argument(0)
+
+		if notifIdsIn == goja.Undefined() || notifIdsIn == goja.Null() {
+			panic(r.NewTypeError("expects an array of ids"))
+		}
+
+		notifIds, err := exportToSlice[[]string](notifIdsIn)
+		if err != nil {
+			panic(r.NewTypeError("expects an array of strings"))
+		}
+		for _, userID := range notifIds {
+			if _, err = uuid.FromString(userID); err != nil {
+				panic(r.NewTypeError(fmt.Sprintf("invalid user id: %v", userID)))
+			}
+		}
+
+		if notifIds == nil {
+			return r.ToValue(make([]string, 0))
+		}
+
+		userIdIn := f.Argument(1)
+		userId := ""
+		if userIdIn != goja.Undefined() && userIdIn != goja.Null() {
+			userId = getJsString(r, userIdIn)
+		}
+
+		results, err := NotificationsGetId(n.ctx, n.logger, n.db, userId, notifIds...)
+		if err != nil {
+			panic(r.NewGoError(fmt.Errorf("failed to get notifications by id: %s", err.Error())))
+		}
+
+		notifications := make([]any, 0, len(results))
+		for _, no := range results {
+			notifObj := r.NewObject()
+
+			_ = notifObj.Set("id", no.Id)
+			_ = notifObj.Set("user_id", no.UserID)
+			_ = notifObj.Set("subject", no.Subject)
+			_ = notifObj.Set("persistent", no.Persistent)
+			_ = notifObj.Set("content", no.Content)
+			_ = notifObj.Set("code", no.Code)
+			_ = notifObj.Set("sender", no.Sender)
+			_ = notifObj.Set("create_time", no.CreateTime.Seconds)
+			_ = notifObj.Set("persistent", no.Persistent)
+
+			notifications = append(notifications, notifObj)
+		}
+
+		return r.NewArray(notifications...)
+	}
+}
+
+// @group notifications
+// @summary Delete notifications by their id.
+// @param ids(type=string[]) A list of notification ids.
+// @param userID(type=string) Optional userID to scope deletions to that user only.
+// @return error(error) An optional error value if an error occurred.
+func (n *runtimeJavascriptNakamaModule) notificationsDeleteId(r *goja.Runtime) func(goja.FunctionCall) goja.Value {
+	return func(f goja.FunctionCall) goja.Value {
+		notifIdsIn := f.Argument(0)
+
+		if notifIdsIn == goja.Undefined() || notifIdsIn == goja.Null() {
+			panic(r.NewTypeError("expects an array of ids"))
+		}
+
+		notifIds, err := exportToSlice[[]string](notifIdsIn)
+		if err != nil {
+			panic(r.NewTypeError("expects an array of strings"))
+		}
+		for _, userID := range notifIds {
+			if _, err = uuid.FromString(userID); err != nil {
+				panic(r.NewTypeError(fmt.Sprintf("invalid user id: %v", userID)))
+			}
+		}
+
+		if notifIds == nil {
+			return r.ToValue(make([]string, 0))
+		}
+
+		userIdIn := f.Argument(1)
+		userId := ""
+		if userIdIn != goja.Undefined() && userIdIn != goja.Null() {
+			userId = getJsString(r, userIdIn)
+		}
+
+		if err := NotificationsDeleteId(n.ctx, n.logger, n.db, userId, notifIds...); err != nil {
+			panic(r.NewGoError(fmt.Errorf("failed to get notifications by id: %s", err.Error())))
 		}
 
 		return goja.Undefined()
@@ -4035,18 +4118,13 @@ func (n *runtimeJavascriptNakamaModule) walletUpdate(r *goja.Runtime) func(goja.
 // @return error(error) An optional error value if an error occurred.
 func (n *runtimeJavascriptNakamaModule) walletsUpdate(r *goja.Runtime) func(goja.FunctionCall) goja.Value {
 	return func(f goja.FunctionCall) goja.Value {
-		updatesIn, ok := f.Argument(0).Export().([]interface{})
-		if !ok {
+		updatesIn, err := exportToSlice[[]map[string]any](f.Argument(0))
+		if err != nil {
 			panic(r.NewTypeError("expects an array of wallet update objects"))
 		}
 
 		updates := make([]*walletUpdate, 0, len(updatesIn))
-		for _, updateIn := range updatesIn {
-			updateMap, ok := updateIn.(map[string]interface{})
-			if !ok {
-				panic(r.NewTypeError("expects an update to be a wallet update object"))
-			}
-
+		for _, updateMap := range updatesIn {
 			update := &walletUpdate{}
 
 			uidRaw, ok := updateMap["userId"]
@@ -4325,26 +4403,21 @@ func (n *runtimeJavascriptNakamaModule) storageList(r *goja.Runtime) func(goja.F
 func (n *runtimeJavascriptNakamaModule) storageRead(r *goja.Runtime) func(goja.FunctionCall) goja.Value {
 	return func(f goja.FunctionCall) goja.Value {
 		keysIn := f.Argument(0)
-		if keysIn == goja.Undefined() {
+		if keysIn == goja.Undefined() || keysIn == goja.Null() {
 			panic(r.NewTypeError("expects an array ok keys"))
 		}
 
-		keysSlice, ok := keysIn.Export().([]interface{})
-		if !ok {
+		keysSlice, err := exportToSlice[[]map[string]any](keysIn)
+		if err != nil {
 			panic(r.NewTypeError("expects an array of keys"))
 		}
 
 		if len(keysSlice) == 0 {
-			return r.ToValue([]interface{}{})
+			return r.ToValue([]any{})
 		}
 
 		objectIDs := make([]*api.ReadStorageObjectId, 0, len(keysSlice))
-		for _, obj := range keysSlice {
-			objMap, ok := obj.(map[string]interface{})
-			if !ok {
-				panic(r.NewTypeError("expects an object"))
-			}
-
+		for _, objMap := range keysSlice {
 			objectID := &api.ReadStorageObjectId{}
 
 			if collectionIn, ok := objMap["collection"]; ok {
@@ -4431,15 +4504,16 @@ func (n *runtimeJavascriptNakamaModule) storageRead(r *goja.Runtime) func(goja.F
 func (n *runtimeJavascriptNakamaModule) storageWrite(r *goja.Runtime) func(goja.FunctionCall) goja.Value {
 	return func(f goja.FunctionCall) goja.Value {
 		data := f.Argument(0)
-		if data == goja.Undefined() {
-			panic(r.NewTypeError("expects a valid array of data"))
-		}
-		dataSlice, ok := data.Export().([]interface{})
-		if !ok {
+		if data == goja.Undefined() || data == goja.Null() {
 			panic(r.NewTypeError("expects a valid array of data"))
 		}
 
-		ops, err := jsArrayToStorageOpWrites(r, dataSlice)
+		dataSlice, err := exportToSlice[[]map[string]any](data)
+		if err != nil {
+			panic(r.NewTypeError("expects an array of storage write objects"))
+		}
+
+		ops, err := jsArrayToStorageOpWrites(dataSlice)
 		if err != nil {
 			panic(r.NewTypeError(err.Error()))
 		}
@@ -4464,14 +4538,9 @@ func (n *runtimeJavascriptNakamaModule) storageWrite(r *goja.Runtime) func(goja.
 	}
 }
 
-func jsArrayToStorageOpWrites(r *goja.Runtime, dataSlice []any) (StorageOpWrites, error) {
+func jsArrayToStorageOpWrites(dataSlice []map[string]any) (StorageOpWrites, error) {
 	ops := make(StorageOpWrites, 0, len(dataSlice))
-	for _, data := range dataSlice {
-		dataMap, ok := data.(map[string]interface{})
-		if !ok {
-			return nil, errors.New("expects a data entry to be an object")
-		}
-
+	for _, dataMap := range dataSlice {
 		var userID uuid.UUID
 		writeOp := &api.WriteStorageObject{}
 
@@ -4580,18 +4649,13 @@ func (n *runtimeJavascriptNakamaModule) storageDelete(r *goja.Runtime) func(goja
 		if keysIn == goja.Undefined() {
 			panic(r.NewTypeError("expects an array ok keys"))
 		}
-		keysSlice, ok := keysIn.Export().([]interface{})
-		if !ok {
+		keysSlice, err := exportToSlice[[]map[string]any](keysIn)
+		if err != nil {
 			panic(r.NewTypeError("expects an array of keys"))
 		}
 
 		ops := make(StorageOpDeletes, 0, len(keysSlice))
-		for _, data := range keysSlice {
-			dataMap, ok := data.(map[string]interface{})
-			if !ok {
-				panic(r.NewTypeError("expects a data entry to be an object"))
-			}
-
+		for _, dataMap := range keysSlice {
 			var userID uuid.UUID
 			objectID := &api.DeleteStorageObjectId{}
 
@@ -4664,6 +4728,7 @@ func (n *runtimeJavascriptNakamaModule) storageDelete(r *goja.Runtime) func(goja
 // @summary Update account, storage, and wallet information simultaneously.
 // @param accountUpdates(type=nkruntime.AccountUpdate[]) Array of account information to be updated.
 // @param storageWrites(type=nkruntime.StorageWriteRequest[]) Array of storage objects to be updated.
+// @param storageDeletes(type=nkruntime.StorageDeleteRequest[]) Array of storage objects to be deleted.
 // @param walletUpdates(type=nkruntime.WalletUpdate[]) Array of wallet updates to be made.
 // @param updateLedger(type=bool, optional=true, default=false) Whether to record this wallet update in the ledger.
 // @return storageWriteAcks(nkruntime.StorageWriteAck[]) A list of acks with the version of the written objects.
@@ -4674,18 +4739,13 @@ func (n *runtimeJavascriptNakamaModule) multiUpdate(r *goja.Runtime) func(goja.F
 		// Process account update inputs.
 		var accountUpdates []*accountUpdate
 		if f.Argument(0) != goja.Undefined() && f.Argument(0) != goja.Null() {
-			accountUpdatesSlice, ok := f.Argument(0).Export().([]interface{})
-			if !ok {
+			accountUpdatesSlice, err := exportToSlice[[]map[string]any](f.Argument(0))
+			if err != nil {
 				panic(r.NewTypeError("expects an array of account updates"))
 			}
 
 			accountUpdates = make([]*accountUpdate, 0, len(accountUpdatesSlice))
-			for _, accUpdate := range accountUpdatesSlice {
-				accUpdateObj, ok := accUpdate.(map[string]interface{})
-				if !ok {
-					panic(r.NewTypeError("expects an account update object"))
-				}
-
+			for _, accUpdateObj := range accountUpdatesSlice {
 				update := &accountUpdate{}
 				if userIDIn, ok := accUpdateObj["userId"]; ok {
 					userIDStr, ok := userIDIn.(string)
@@ -4767,18 +4827,13 @@ func (n *runtimeJavascriptNakamaModule) multiUpdate(r *goja.Runtime) func(goja.F
 		var storageWriteOps StorageOpWrites
 		if f.Argument(1) != goja.Undefined() && f.Argument(1) != goja.Null() {
 			data := f.Argument(1)
-			dataSlice, ok := data.Export().([]interface{})
-			if !ok {
+			dataSlice, err := exportToSlice[[]map[string]any](data)
+			if err != nil {
 				panic(r.ToValue(r.NewTypeError("expects a valid array of data")))
 			}
 
 			storageWriteOps = make(StorageOpWrites, 0, len(dataSlice))
-			for _, data := range dataSlice {
-				dataMap, ok := data.(map[string]interface{})
-				if !ok {
-					panic(r.NewTypeError("expects a data entry to be an object"))
-				}
-
+			for _, dataMap := range dataSlice {
 				var userID uuid.UUID
 				writeOp := &api.WriteStorageObject{}
 
@@ -4874,21 +4929,90 @@ func (n *runtimeJavascriptNakamaModule) multiUpdate(r *goja.Runtime) func(goja.F
 			}
 		}
 
+		// Process storage delete inputs.
+		var storageDeleteOps StorageOpDeletes
+		if f.Argument(2) != goja.Undefined() && f.Argument(2) != goja.Null() {
+			data := f.Argument(2)
+			dataSlice, err := exportToSlice[[]map[string]any](data)
+			if err != nil {
+				panic(r.ToValue(r.NewTypeError("expects a valid array of data")))
+			}
+
+			storageDeleteOps = make(StorageOpDeletes, 0, len(dataSlice))
+			for _, dataMap := range dataSlice {
+				var userID uuid.UUID
+				deleteOp := &api.DeleteStorageObjectId{}
+
+				if collectionIn, ok := dataMap["collection"]; ok {
+					collection, ok := collectionIn.(string)
+					if !ok {
+						panic(r.NewTypeError("expects 'collection' value to be a string"))
+					}
+					if collection == "" {
+						panic(r.NewTypeError("expects 'collection' value to be non-empty"))
+					}
+					deleteOp.Collection = collection
+				}
+
+				if keyIn, ok := dataMap["key"]; ok {
+					key, ok := keyIn.(string)
+					if !ok {
+						panic(r.NewTypeError("expects 'key' value to be a string"))
+					}
+					if key == "" {
+						panic(r.NewTypeError("expects 'key' value to be non-empty"))
+					}
+					deleteOp.Key = key
+				}
+
+				if userIDIn, ok := dataMap["userId"]; ok {
+					userIDStr, ok := userIDIn.(string)
+					if !ok {
+						panic(r.NewTypeError("expects 'userId' value to be a string"))
+					}
+					var err error
+					userID, err = uuid.FromString(userIDStr)
+					if err != nil {
+						panic(r.NewTypeError("expects 'userId' value to be a valid id"))
+					}
+				}
+
+				if versionIn, ok := dataMap["version"]; ok {
+					version, ok := versionIn.(string)
+					if !ok {
+						panic(r.NewTypeError("expects 'version' value to be a string"))
+					}
+					if version == "" {
+						panic(r.NewTypeError("expects 'version' value to be a non-empty string"))
+					}
+					deleteOp.Version = version
+				}
+
+				if deleteOp.Collection == "" {
+					panic(r.NewTypeError("expects collection to be supplied"))
+				} else if deleteOp.Key == "" {
+					panic(r.NewTypeError("expects key to be supplied"))
+				}
+
+				storageDeleteOps = append(storageDeleteOps, &StorageOpDelete{
+					OwnerID:  userID.String(),
+					ObjectID: deleteOp,
+				})
+			}
+		}
+
 		// Process wallet update inputs.
 		var walletUpdates []*walletUpdate
-		if f.Argument(2) != goja.Undefined() && f.Argument(2) != goja.Null() {
-			updatesIn, ok := f.Argument(2).Export().([]interface{})
-			if !ok {
+		if f.Argument(3) != goja.Undefined() && f.Argument(3) != goja.Null() {
+			updatesIn := f.Argument(3)
+
+			updates, err := exportToSlice[[]map[string]any](updatesIn)
+			if err != nil {
 				panic(r.NewTypeError("expects an array of wallet update objects"))
 			}
 
-			walletUpdates = make([]*walletUpdate, 0, len(updatesIn))
-			for _, updateIn := range updatesIn {
-				updateMap, ok := updateIn.(map[string]interface{})
-				if !ok {
-					panic(r.NewTypeError("expects an update to be a wallet update object"))
-				}
-
+			walletUpdates = make([]*walletUpdate, 0, len(updates))
+			for _, updateMap := range updates {
 				update := &walletUpdate{}
 
 				uidRaw, ok := updateMap["userId"]
@@ -4942,11 +5066,11 @@ func (n *runtimeJavascriptNakamaModule) multiUpdate(r *goja.Runtime) func(goja.F
 		}
 
 		updateLedger := false
-		if f.Argument(3) != goja.Undefined() && f.Argument(3) != goja.Null() {
-			updateLedger = getJsBool(r, f.Argument(3))
+		if f.Argument(4) != goja.Undefined() && f.Argument(4) != goja.Null() {
+			updateLedger = getJsBool(r, f.Argument(4))
 		}
 
-		acks, results, err := MultiUpdate(n.ctx, n.logger, n.db, n.metrics, accountUpdates, storageWriteOps, walletUpdates, updateLedger)
+		acks, results, err := MultiUpdate(n.ctx, n.logger, n.db, n.metrics, accountUpdates, storageWriteOps, storageDeleteOps, n.storageIndex, walletUpdates, updateLedger)
 		if err != nil {
 			panic(r.NewGoError(fmt.Errorf("error running multi update: %s", err.Error())))
 		}
@@ -4994,6 +5118,7 @@ func (n *runtimeJavascriptNakamaModule) multiUpdate(r *goja.Runtime) func(goja.F
 // @param operator(type=string, optional=true, default="best") The operator that determines how scores behave when submitted. Possible values are "best", "set", or "incr".
 // @param resetSchedule(type=string, optional=true) The cron format used to define the reset schedule for the leaderboard. This controls when a leaderboard is reset and can be used to power daily/weekly/monthly leaderboards.
 // @param metadata(type=object, optional=true) The metadata you want associated to the leaderboard. Some good examples are weather conditions for a racing game.
+// @param enableRanks(type=bool, optional=true, default=false) Whether to enable rank values for the leaderboard.
 // @return error(error) An optional error value if an error occurred.
 func (n *runtimeJavascriptNakamaModule) leaderboardCreate(r *goja.Runtime) func(goja.FunctionCall) goja.Value {
 	return func(f goja.FunctionCall) goja.Value {
@@ -5063,7 +5188,12 @@ func (n *runtimeJavascriptNakamaModule) leaderboardCreate(r *goja.Runtime) func(
 			metadataStr = string(metadataBytes)
 		}
 
-		_, created, err := n.leaderboardCache.Create(n.ctx, id, authoritative, sortOrderNumber, operatorNumber, resetSchedule, metadataStr)
+		enableRanks := false
+		if f.Argument(6) != goja.Undefined() && f.Argument(6) != goja.Null() {
+			enableRanks = getJsBool(r, f.Argument(6))
+		}
+
+		_, created, err := n.leaderboardCache.Create(n.ctx, id, authoritative, sortOrderNumber, operatorNumber, resetSchedule, metadataStr, enableRanks)
 		if err != nil {
 			panic(r.NewGoError(fmt.Errorf("error creating leaderboard: %v", err.Error())))
 		}
@@ -5156,6 +5286,22 @@ func (n *runtimeJavascriptNakamaModule) leaderboardList(r *goja.Runtime) func(go
 }
 
 // @group leaderboards
+// @param id(type=string) The leaderboard id.
+// @return error(error) An optional error value if an error occurred.
+// @summary Disable a leaderboard rank cache freeing its allocated resources. If already disabled is a NOOP.
+func (n *runtimeJavascriptNakamaModule) leaderboardRanksDisable(r *goja.Runtime) func(goja.FunctionCall) goja.Value {
+	return func(f goja.FunctionCall) goja.Value {
+		id := getJsString(r, f.Argument(0))
+
+		if err := disableLeaderboardRanks(n.ctx, n.logger, n.db, n.leaderboardCache, n.rankCache, id); err != nil {
+			panic(r.NewGoError(err))
+		}
+
+		return goja.Undefined()
+	}
+}
+
+// @group leaderboards
 // @summary List records on the specified leaderboard, optionally filtering to only a subset of records by their owners. Records will be listed in the preconfigured leaderboard sort order.
 // @param id(type=string) The unique identifier for the leaderboard to list. Mandatory field.
 // @param owners(type=string[]) Array of owners to filter to.
@@ -5177,20 +5323,16 @@ func (n *runtimeJavascriptNakamaModule) leaderboardRecordsList(r *goja.Runtime) 
 		var ownerIds []string
 		owners := f.Argument(1)
 		if owners != goja.Undefined() && owners != goja.Null() {
-			ownersSlice, ok := owners.Export().([]interface{})
-			if !ok {
-				panic(r.NewTypeError("expects an array of owner ids"))
+			var err error
+			ownerIds, err = exportToSlice[[]string](owners)
+			if err != nil {
+				panic(r.NewTypeError("expects an array of user ids"))
 			}
-			ownerIds = make([]string, 0, len(ownersSlice))
-			for _, owner := range ownersSlice {
-				ownerStr, ok := owner.(string)
-				if !ok {
+
+			for _, owner := range ownerIds {
+				if _, err := uuid.FromString(owner); err != nil {
 					panic(r.NewTypeError("expects a valid owner id"))
 				}
-				if _, err := uuid.FromString(ownerStr); err != nil {
-					panic(r.NewTypeError("expects a valid owner id"))
-				}
-				ownerIds = append(ownerIds, ownerStr)
 			}
 		}
 
@@ -5400,15 +5542,9 @@ func (n *runtimeJavascriptNakamaModule) leaderboardsGetId(r *goja.Runtime) func(
 		if leaderboardIdsIn == goja.Undefined() || leaderboardIdsIn == goja.Null() {
 			panic(r.NewTypeError("expects an array of leaderboard ids"))
 		}
-		leaderboardIdsSlice := leaderboardIdsIn.Export().([]interface{})
-
-		leaderboardIDs := make([]string, 0, len(leaderboardIdsSlice))
-		for _, id := range leaderboardIdsSlice {
-			idString, ok := id.(string)
-			if !ok {
-				panic(r.NewTypeError("expects a leaderboard ID to be a string"))
-			}
-			leaderboardIDs = append(leaderboardIDs, idString)
+		leaderboardIDs, err := exportToSlice[[]string](leaderboardIdsIn)
+		if err != nil {
+			panic(r.NewTypeError("expects an array of strings"))
 		}
 
 		leaderboards := LeaderboardsGet(n.leaderboardCache, leaderboardIDs)
@@ -5683,7 +5819,7 @@ func (n *runtimeJavascriptNakamaModule) purchaseGetByTransactionId(r *goja.Runti
 			panic(r.NewTypeError("expects a transaction id string"))
 		}
 
-		purchase, err := GetPurchaseByTransactionId(n.ctx, n.db, transactionID)
+		purchase, err := GetPurchaseByTransactionId(n.ctx, n.logger, n.db, transactionID)
 		if err != nil {
 			panic(r.NewGoError(fmt.Errorf("error retrieving purchase: %s", err.Error())))
 		}
@@ -5963,6 +6099,7 @@ func (n *runtimeJavascriptNakamaModule) subscriptionsList(r *goja.Runtime) func(
 // @param maxSize(type=number, optional=true) Maximum size of participants in a tournament.
 // @param maxNumScore(type=number, optional=true, default=1000000) Maximum submission attempts for a tournament record.
 // @param joinRequired(type=bool, optional=true, default=false) Whether the tournament needs to be joined before a record write is allowed.
+// @param enableRanks(type=bool, optional=true, default=false) Whether to enable rank values for the leaderboard.
 // @return error(error) An optional error value if an error occurred.
 func (n *runtimeJavascriptNakamaModule) tournamentCreate(r *goja.Runtime) func(goja.FunctionCall) goja.Value {
 	return func(f goja.FunctionCall) goja.Value {
@@ -6095,7 +6232,12 @@ func (n *runtimeJavascriptNakamaModule) tournamentCreate(r *goja.Runtime) func(g
 			joinRequired = getJsBool(r, f.Argument(14))
 		}
 
-		if err := TournamentCreate(n.ctx, n.logger, n.leaderboardCache, n.leaderboardScheduler, id, authoritative, sortOrderNumber, operatorNumber, resetSchedule, metadataStr, title, description, category, startTime, endTime, duration, maxSize, maxNumScore, joinRequired); err != nil {
+		enableRanks := false
+		if f.Argument(15) != goja.Undefined() && f.Argument(15) != goja.Null() {
+			enableRanks = getJsBool(r, f.Argument(15))
+		}
+
+		if err := TournamentCreate(n.ctx, n.logger, n.leaderboardCache, n.leaderboardScheduler, id, authoritative, sortOrderNumber, operatorNumber, resetSchedule, metadataStr, title, description, category, startTime, endTime, duration, maxSize, maxNumScore, joinRequired, enableRanks); err != nil {
 			panic(r.NewGoError(fmt.Errorf("error creating tournament: %v", err.Error())))
 		}
 
@@ -6201,15 +6343,9 @@ func (n *runtimeJavascriptNakamaModule) tournamentsGetId(r *goja.Runtime) func(g
 		if tournamentIdsIn == goja.Undefined() || tournamentIdsIn == goja.Null() {
 			panic(r.NewTypeError("expects an array of tournament ids"))
 		}
-		tournamentIdsSlice := tournamentIdsIn.Export().([]interface{})
-
-		tournmentIDs := make([]string, 0, len(tournamentIdsSlice))
-		for _, id := range tournamentIdsSlice {
-			idString, ok := id.(string)
-			if !ok {
-				panic(r.NewTypeError("expects a tournament ID to be a string"))
-			}
-			tournmentIDs = append(tournmentIDs, idString)
+		tournmentIDs, err := exportToSlice[[]string](tournamentIdsIn)
+		if err != nil {
+			panic(r.NewTypeError("expects an array of strings"))
 		}
 
 		if len(tournmentIDs) == 0 {
@@ -6257,20 +6393,16 @@ func (n *runtimeJavascriptNakamaModule) tournamentRecordsList(r *goja.Runtime) f
 		var ownerIds []string
 		owners := f.Argument(1)
 		if owners != goja.Undefined() && owners != goja.Null() {
-			ownersSlice, ok := owners.Export().([]interface{})
-			if !ok {
-				panic(r.NewTypeError("expects an array of owner ids"))
+			var err error
+			ownerIds, err = exportToSlice[[]string](owners)
+			if err != nil {
+				panic(r.NewTypeError("expects an array of user ids"))
 			}
-			ownerIds = make([]string, 0, len(ownersSlice))
-			for _, owner := range ownersSlice {
-				ownerStr, ok := owner.(string)
-				if !ok {
+
+			for _, owner := range ownerIds {
+				if _, err := uuid.FromString(owner); err != nil {
 					panic(r.NewTypeError("expects a valid owner id"))
 				}
-				if _, err := uuid.FromString(ownerStr); err != nil {
-					panic(r.NewTypeError("expects a valid owner id"))
-				}
-				ownerIds = append(ownerIds, ownerStr)
 			}
 		}
 
@@ -6470,6 +6602,22 @@ func (n *runtimeJavascriptNakamaModule) tournamentList(r *goja.Runtime) func(goj
 }
 
 // @group tournaments
+// @param id(type=string) The tournament id.
+// @return error(error) An optional error value if an error occurred.
+// @summary Disable a tournament rank cache freeing its allocated resources. If already disabled is a NOOP.
+func (n *runtimeJavascriptNakamaModule) tournamentRanksDisable(r *goja.Runtime) func(goja.FunctionCall) goja.Value {
+	return func(f goja.FunctionCall) goja.Value {
+		id := getJsString(r, f.Argument(0))
+
+		if err := DisableTournamentRanks(n.ctx, n.logger, n.db, n.leaderboardCache, n.rankCache, id); err != nil {
+			panic(r.NewGoError(err))
+		}
+
+		return goja.Undefined()
+	}
+}
+
+// @group tournaments
 // @summary Submit a score and optional subscore to a tournament leaderboard. If the tournament has been configured with join required this will fail unless the owner has already joined the tournament.
 // @param id(type=string) The unique identifier for the tournament leaderboard to submit to.
 // @param owner(type=string) The owner of this score submission. Mandatory field.
@@ -6627,18 +6775,9 @@ func (n *runtimeJavascriptNakamaModule) groupsGetId(r *goja.Runtime) func(goja.F
 		if groupIdsIn == goja.Undefined() || groupIdsIn == goja.Null() {
 			panic(r.NewTypeError("expects an array of group ids"))
 		}
-		tournamentIdsSlice, ok := groupIdsIn.Export().([]interface{})
-		if !ok {
-			panic(r.NewTypeError("expects array of group ids"))
-		}
-
-		groupIDs := make([]string, 0, len(tournamentIdsSlice))
-		for _, id := range tournamentIdsSlice {
-			idString, ok := id.(string)
-			if !ok {
-				panic(r.NewTypeError("expects group ID to be a string"))
-			}
-			groupIDs = append(groupIDs, idString)
+		groupIDs, err := exportToSlice[[]string](groupIdsIn)
+		if err != nil {
+			panic(r.NewTypeError("expects array of strings"))
 		}
 
 		groups, err := GetGroups(n.ctx, n.logger, n.db, groupIDs)
@@ -6917,18 +7056,14 @@ func (n *runtimeJavascriptNakamaModule) groupUsersKick(r *goja.Runtime) func(goj
 		if goja.IsUndefined(users) || goja.IsNull(users) {
 			panic(r.NewTypeError("expects an array of user ids"))
 		}
-		usersSlice, ok := users.Export().([]interface{})
-		if !ok {
-			panic(r.NewTypeError("expects an array of user ids"))
+		usersSlice, err := exportToSlice[[]string](users)
+		if err != nil {
+			panic(r.NewTypeError("expects an array of strings"))
 		}
 
 		userIDs := make([]uuid.UUID, 0, len(usersSlice))
 		for _, id := range usersSlice {
-			idStr, ok := id.(string)
-			if !ok {
-				panic(r.NewTypeError("expects user id to be valid identifier"))
-			}
-			userID, err := uuid.FromString(idStr)
+			userID, err := uuid.FromString(id)
 			if err != nil {
 				panic(r.NewTypeError("expects user id to be valid identifier"))
 			}
@@ -6975,8 +7110,8 @@ func (n *runtimeJavascriptNakamaModule) groupUsersList(r *goja.Runtime) func(goj
 		limit := 100
 		if !goja.IsUndefined(f.Argument(1)) && !goja.IsNull(f.Argument(1)) {
 			limit = int(getJsInt(r, f.Argument(1)))
-			if limit < 1 || limit > 100 {
-				panic(r.NewTypeError("expects limit to be 1-100"))
+			if limit < 1 || limit > 10000 {
+				panic(r.NewTypeError("expects limit to be 1-10000"))
 			}
 		}
 
@@ -7228,6 +7363,68 @@ func (n *runtimeJavascriptNakamaModule) friendsList(r *goja.Runtime) func(goja.F
 }
 
 // @group friends
+// @summary List all friends of friends of a user.
+// @param userId(type=string) The ID of the user whose friends of friends you want to list.
+// @param limit(type=number, optional=true, default=10) The number of friends to retrieve in this page of results. No more than 100 limit allowed per result.
+// @param cursor(type=string, optional=true, default="") Pagination cursor from previous result. Don't set to start fetching from the beginning.
+// @return friends(nkruntime.FriendsOfFriendsList) The user information for users that are friends of friends of the current user.
+// @return cursor(string) An optional next page cursor that can be used to retrieve the next page of records (if any). Will be set to "" or null when fetching last available page.
+// @return error(error) An optional error value if an error occurred.
+func (n *runtimeJavascriptNakamaModule) friendsOfFriendsList(r *goja.Runtime) func(goja.FunctionCall) goja.Value {
+	return func(f goja.FunctionCall) goja.Value {
+		userIDString := getJsString(r, f.Argument(0))
+		if userIDString == "" {
+			panic(r.NewTypeError("expects a user ID string"))
+		}
+		userID, err := uuid.FromString(userIDString)
+		if err != nil {
+			panic(r.NewTypeError("expects user ID to be a valid identifier"))
+		}
+
+		limit := 100
+		if !goja.IsUndefined(f.Argument(1)) && !goja.IsNull(f.Argument(1)) {
+			limit = int(getJsInt(r, f.Argument(1)))
+			if limit < 1 || limit > 1000 {
+				panic(r.NewTypeError("expects limit to be 1-1000"))
+			}
+		}
+
+		cursor := ""
+		if !goja.IsUndefined(f.Argument(2)) && !goja.IsNull(f.Argument(2)) {
+			cursor = getJsString(r, f.Argument(2))
+		}
+
+		friends, err := ListFriendsOfFriends(n.ctx, n.logger, n.db, n.statusRegistry, userID, limit, cursor)
+		if err != nil {
+			panic(r.NewGoError(fmt.Errorf("error while trying to list friends for a user: %v", err.Error())))
+		}
+
+		userFriendsOfFriends := make([]interface{}, 0, len(friends.FriendsOfFriends))
+		for _, f := range friends.FriendsOfFriends {
+			fum, err := userToJsObject(f.User)
+			if err != nil {
+				panic(r.NewGoError(err))
+			}
+
+			fm := make(map[string]interface{}, 3)
+			fm["referrer"] = f.Referrer
+			fm["user"] = fum
+
+			userFriendsOfFriends = append(userFriendsOfFriends, fm)
+		}
+
+		result := map[string]interface{}{
+			"friendsOfFriends": userFriendsOfFriends,
+		}
+		if friends.Cursor != "" {
+			result["cursor"] = friends.Cursor
+		}
+
+		return r.ToValue(result)
+	}
+}
+
+// @group friends
 // @summary Add friends to a user.
 // @param userId(type=string) The ID of the user to whom you want to add friends.
 // @param username(type=string) The name of the user to whom you want to add friends.
@@ -7247,47 +7444,36 @@ func (n *runtimeJavascriptNakamaModule) friendsAdd(r *goja.Runtime) func(goja.Fu
 			panic(r.NewTypeError("expects a username string"))
 		}
 
+		userIdsIn := f.Argument(2)
 		var userIDs []string
-		if f.Argument(2) != goja.Undefined() && f.Argument(2) != goja.Null() {
-			var ok bool
-			userIdsIn, ok := f.Argument(2).Export().([]interface{})
-			if !ok {
-				panic(r.NewTypeError("Invalid argument - user ids must be an array."))
+		if userIdsIn != goja.Undefined() && userIdsIn != goja.Null() {
+			userIDs, err = exportToSlice[[]string](userIdsIn)
+			if err != nil {
+				panic(r.NewTypeError("expects an array of strings"))
 			}
-			uIds := make([]string, 0, len(userIdsIn))
-			for _, userID := range userIdsIn {
-				id, ok := userID.(string)
-				if !ok {
-					panic(r.NewTypeError(fmt.Sprintf("invalid user id: %v - must be a string", userID)))
-				} else if uid, err := uuid.FromString(id); err != nil || uid == uuid.Nil {
+			for _, id := range userIDs {
+				if uid, err := uuid.FromString(id); err != nil || uid == uuid.Nil {
 					panic(r.NewTypeError(fmt.Sprintf("invalid user id: %v", userID)))
 				} else if userIDString == id {
 					panic(r.NewTypeError("cannot add self as friend"))
 				}
-				uIds = append(uIds, id)
 			}
-			userIDs = uIds
 		}
 
 		var usernames []string
-		if f.Argument(3) != goja.Undefined() && f.Argument(3) != goja.Null() {
-			usernamesIn, ok := f.Argument(3).Export().([]interface{})
-			if !ok {
-				panic(r.NewTypeError("Invalid argument - usernames must be an array."))
+		usernamesIn := f.Argument(3)
+		if usernamesIn != goja.Undefined() && usernamesIn != goja.Null() {
+			usernames, err = exportToSlice[[]string](usernamesIn)
+			if err != nil {
+				panic(r.NewTypeError("expects an array of strings"))
 			}
-			unames := make([]string, 0, len(usernamesIn))
-			for _, unameIn := range usernamesIn {
-				uname, ok := unameIn.(string)
-				if !ok {
-					panic(r.NewTypeError("Invalid argument - username must be a string"))
-				} else if uname == "" {
+			for _, uname := range usernames {
+				if uname == "" {
 					panic(r.NewTypeError("username to add must not be empty"))
 				} else if uname == username {
 					panic(r.NewTypeError("cannot add self as friend"))
 				}
-				unames = append(unames, uname)
 			}
-			usernames = unames
 		}
 
 		if userIDs == nil && usernames == nil {
@@ -7308,7 +7494,7 @@ func (n *runtimeJavascriptNakamaModule) friendsAdd(r *goja.Runtime) func(goja.Fu
 		allIDs = append(allIDs, userIDs...)
 		allIDs = append(allIDs, fetchIDs...)
 
-		err = AddFriends(n.ctx, n.logger, n.db, n.router, userID, username, allIDs)
+		err = AddFriends(n.ctx, n.logger, n.db, n.tracker, n.router, userID, username, allIDs)
 		if err != nil {
 			panic(r.NewTypeError(err.Error()))
 		}
@@ -7338,46 +7524,35 @@ func (n *runtimeJavascriptNakamaModule) friendsDelete(r *goja.Runtime) func(goja
 		}
 
 		var userIDs []string
-		if f.Argument(2) != goja.Undefined() && f.Argument(2) != goja.Null() {
-			var ok bool
-			userIdsIn, ok := f.Argument(2).Export().([]interface{})
-			if !ok {
-				panic(r.NewTypeError("Invalid argument - user ids must be an array."))
+		userIDsIn := f.Argument(2)
+		if userIDsIn != goja.Undefined() && userIDsIn != goja.Null() {
+			userIDs, err = exportToSlice[[]string](userIDsIn)
+			if err != nil {
+				panic(r.NewTypeError("expects an array of strings"))
 			}
-			uIds := make([]string, 0, len(userIdsIn))
-			for _, userID := range userIdsIn {
-				id, ok := userID.(string)
-				if !ok {
-					panic(r.NewTypeError(fmt.Sprintf("invalid user id: %v - must be a string", userID)))
-				} else if uid, err := uuid.FromString(id); err != nil || uid == uuid.Nil {
+			for _, userId := range userIDs {
+				if uid, err := uuid.FromString(userId); err != nil || uid == uuid.Nil {
 					panic(r.NewTypeError(fmt.Sprintf("invalid user id: %v", userID)))
-				} else if userIDString == id {
+				} else if userIDString == userId {
 					panic(r.NewTypeError("cannot delete self"))
 				}
-				uIds = append(uIds, id)
 			}
-			userIDs = uIds
 		}
 
 		var usernames []string
-		if f.Argument(3) != goja.Undefined() && f.Argument(3) != goja.Null() {
-			usernamesIn, ok := f.Argument(3).Export().([]interface{})
-			if !ok {
-				panic(r.NewTypeError("Invalid argument - usernames must be an array."))
+		usernamesIn := f.Argument(3)
+		if usernamesIn != goja.Undefined() && usernamesIn != goja.Null() {
+			usernames, err = exportToSlice[[]string](usernamesIn)
+			if err != nil {
+				panic(r.NewTypeError("expects an array of strings"))
 			}
-			unames := make([]string, 0, len(usernamesIn))
-			for _, unameIn := range usernamesIn {
-				uname, ok := unameIn.(string)
-				if !ok {
-					panic(r.NewTypeError("Invalid argument - username must be a string"))
-				} else if uname == "" {
+			for _, uname := range usernames {
+				if uname == "" {
 					panic(r.NewTypeError("username to delete must not be empty"))
 				} else if uname == username {
 					panic(r.NewTypeError("cannot delete self"))
 				}
-				unames = append(unames, uname)
 			}
-			usernames = unames
 		}
 
 		if userIDs == nil && usernames == nil {
@@ -7428,46 +7603,36 @@ func (n *runtimeJavascriptNakamaModule) friendsBlock(r *goja.Runtime) func(goja.
 		}
 
 		var userIDs []string
-		if f.Argument(2) != goja.Undefined() && f.Argument(2) != goja.Null() {
-			var ok bool
-			userIdsIn, ok := f.Argument(2).Export().([]interface{})
-			if !ok {
-				panic(r.NewTypeError("Invalid argument - user ids must be an array."))
+		userIdsIn := f.Argument(2)
+		if userIdsIn != goja.Undefined() && userIdsIn != goja.Null() {
+			userIDs, err = exportToSlice[[]string](userIdsIn)
+			if err != nil {
+				panic(r.NewTypeError("expects an array of strings"))
 			}
-			uIds := make([]string, 0, len(userIdsIn))
-			for _, userID := range userIdsIn {
-				id, ok := userID.(string)
-				if !ok {
-					panic(r.NewTypeError(fmt.Sprintf("invalid user id: %v - must be a string", userID)))
-				} else if uid, err := uuid.FromString(id); err != nil || uid == uuid.Nil {
+
+			for _, id := range userIDs {
+				if uid, err := uuid.FromString(id); err != nil || uid == uuid.Nil {
 					panic(r.NewTypeError(fmt.Sprintf("invalid user id: %v", userID)))
 				} else if userIDString == id {
 					panic(r.NewTypeError("cannot block self"))
 				}
-				uIds = append(uIds, id)
 			}
-			userIDs = uIds
 		}
 
 		var usernames []string
-		if f.Argument(3) != goja.Undefined() && f.Argument(3) != goja.Null() {
-			usernamesIn, ok := f.Argument(3).Export().([]interface{})
-			if !ok {
-				panic(r.NewTypeError("Invalid argument - usernames must be an array."))
+		usernamesIn := f.Argument(3)
+		if usernamesIn != goja.Undefined() && usernamesIn != goja.Null() {
+			usernames, err = exportToSlice[[]string](usernamesIn)
+			if err != nil {
+				panic(r.NewTypeError("expects an array of strings"))
 			}
-			unames := make([]string, 0, len(usernamesIn))
-			for _, unameIn := range usernamesIn {
-				uname, ok := unameIn.(string)
-				if !ok {
-					panic(r.NewTypeError("Invalid argument - username must be a string"))
-				} else if uname == "" {
+			for _, uname := range usernames {
+				if uname == "" {
 					panic(r.NewTypeError("username to block must not be empty"))
 				} else if uname == username {
 					panic(r.NewTypeError("cannot block self"))
 				}
-				unames = append(unames, uname)
 			}
-			usernames = unames
 		}
 
 		if userIDs == nil && usernames == nil {
@@ -7488,7 +7653,7 @@ func (n *runtimeJavascriptNakamaModule) friendsBlock(r *goja.Runtime) func(goja.
 		allIDs = append(allIDs, userIDs...)
 		allIDs = append(allIDs, fetchIDs...)
 
-		err = BlockFriends(n.ctx, n.logger, n.db, userID, allIDs)
+		err = BlockFriends(n.ctx, n.logger, n.db, n.tracker, userID, allIDs)
 		if err != nil {
 			panic(r.NewTypeError(err.Error()))
 		}
@@ -7528,7 +7693,7 @@ func (n *runtimeJavascriptNakamaModule) groupUserJoin(r *goja.Runtime) func(goja
 			panic(r.NewTypeError("expects a username string"))
 		}
 
-		if err := JoinGroup(n.ctx, n.logger, n.db, n.router, groupID, userID, username); err != nil {
+		if err := JoinGroup(n.ctx, n.logger, n.db, n.tracker, n.router, groupID, userID, username); err != nil {
 			panic(r.NewGoError(fmt.Errorf("error while trying to join group: %v", err.Error())))
 		}
 
@@ -7592,29 +7757,25 @@ func (n *runtimeJavascriptNakamaModule) groupUsersAdd(r *goja.Runtime) func(goja
 			panic(r.NewTypeError("expects group ID to be a valid identifier"))
 		}
 
-		users := f.Argument(1)
-		if goja.IsUndefined(users) || goja.IsNull(users) {
+		usersIn := f.Argument(1)
+		if goja.IsUndefined(usersIn) || goja.IsNull(usersIn) {
 			panic(r.NewTypeError("expects an array of user ids"))
 		}
-		usersSlice, ok := users.Export().([]interface{})
-		if !ok {
-			panic(r.NewTypeError("expects an array of user ids"))
+		userIDs, err := exportToSlice[[]string](usersIn)
+		if err != nil {
+			panic(r.NewTypeError("expects an array of strings"))
 		}
 
-		userIDs := make([]uuid.UUID, 0, len(usersSlice))
-		for _, id := range usersSlice {
-			idStr, ok := id.(string)
-			if !ok {
-				panic(r.NewTypeError("expects user id to be valid identifier"))
-			}
-			userID, err := uuid.FromString(idStr)
+		uids := make([]uuid.UUID, 0, len(userIDs))
+		for _, id := range userIDs {
+			uid, err := uuid.FromString(id)
 			if err != nil {
 				panic(r.NewTypeError("expects user id to be valid identifier"))
 			}
-			if userID == uuid.Nil {
+			if uid == uuid.Nil {
 				panic(r.NewTypeError("cannot add the root user"))
 			}
-			userIDs = append(userIDs, userID)
+			uids = append(uids, uid)
 		}
 		if len(userIDs) == 0 {
 			return goja.Undefined()
@@ -7630,7 +7791,7 @@ func (n *runtimeJavascriptNakamaModule) groupUsersAdd(r *goja.Runtime) func(goja
 			callerID = cid
 		}
 
-		if err := AddGroupUsers(n.ctx, n.logger, n.db, n.router, callerID, groupID, userIDs); err != nil {
+		if err := AddGroupUsers(n.ctx, n.logger, n.db, n.tracker, n.router, callerID, groupID, uids); err != nil {
 			panic(r.NewGoError(fmt.Errorf("error while trying to add users into group: %v", err.Error())))
 		}
 
@@ -7655,29 +7816,25 @@ func (n *runtimeJavascriptNakamaModule) groupUsersBan(r *goja.Runtime) func(goja
 			panic(r.NewTypeError("expects group ID to be a valid identifier"))
 		}
 
-		users := f.Argument(1)
-		if goja.IsUndefined(users) || goja.IsNull(users) {
+		usersIn := f.Argument(1)
+		if goja.IsUndefined(usersIn) || goja.IsNull(usersIn) {
 			panic(r.NewTypeError("expects an array of user ids"))
 		}
-		usersSlice, ok := users.Export().([]interface{})
-		if !ok {
+		userIDs, err := exportToSlice[[]string](usersIn)
+		if err != nil {
 			panic(r.NewTypeError("expects an array of user ids"))
 		}
 
-		userIDs := make([]uuid.UUID, 0, len(usersSlice))
-		for _, id := range usersSlice {
-			idStr, ok := id.(string)
-			if !ok {
-				panic(r.NewTypeError("expects user id to be valid identifier"))
-			}
-			userID, err := uuid.FromString(idStr)
+		uids := make([]uuid.UUID, 0, len(userIDs))
+		for _, id := range userIDs {
+			uid, err := uuid.FromString(id)
 			if err != nil {
 				panic(r.NewTypeError("expects user id to be valid identifier"))
 			}
-			if userID == uuid.Nil {
+			if uid == uuid.Nil {
 				panic(r.NewTypeError("cannot ban the root user"))
 			}
-			userIDs = append(userIDs, userID)
+			uids = append(uids, uid)
 		}
 		if len(userIDs) == 0 {
 			return goja.Undefined()
@@ -7693,7 +7850,7 @@ func (n *runtimeJavascriptNakamaModule) groupUsersBan(r *goja.Runtime) func(goja
 			callerID = cid
 		}
 
-		if err := BanGroupUsers(n.ctx, n.logger, n.db, n.tracker, n.router, n.streamManager, callerID, groupID, userIDs); err != nil {
+		if err := BanGroupUsers(n.ctx, n.logger, n.db, n.tracker, n.router, n.streamManager, callerID, groupID, uids); err != nil {
 			panic(r.NewGoError(fmt.Errorf("error while trying to ban users from group: %v", err.Error())))
 		}
 
@@ -7718,29 +7875,25 @@ func (n *runtimeJavascriptNakamaModule) groupUsersPromote(r *goja.Runtime) func(
 			panic(r.NewTypeError("expects group ID to be a valid identifier"))
 		}
 
-		users := f.Argument(1)
-		if goja.IsUndefined(users) || goja.IsNull(users) {
+		usersIn := f.Argument(1)
+		if goja.IsUndefined(usersIn) || goja.IsNull(usersIn) {
 			panic(r.NewTypeError("expects an array of user ids"))
 		}
-		usersSlice, ok := users.Export().([]interface{})
-		if !ok {
+		userIDs, err := exportToSlice[[]string](usersIn)
+		if err != nil {
 			panic(r.NewTypeError("expects an array of user ids"))
 		}
 
-		userIDs := make([]uuid.UUID, 0, len(usersSlice))
-		for _, id := range usersSlice {
-			idStr, ok := id.(string)
-			if !ok {
-				panic(r.NewTypeError("expects user id to be valid identifier"))
-			}
-			userID, err := uuid.FromString(idStr)
+		uids := make([]uuid.UUID, 0, len(userIDs))
+		for _, id := range userIDs {
+			uid, err := uuid.FromString(id)
 			if err != nil {
 				panic(r.NewTypeError("expects user id to be valid identifier"))
 			}
-			if userID == uuid.Nil {
+			if uid == uuid.Nil {
 				panic(r.NewTypeError("cannot promote the root user"))
 			}
-			userIDs = append(userIDs, userID)
+			uids = append(uids, uid)
 		}
 		if len(userIDs) == 0 {
 			return goja.Undefined()
@@ -7756,7 +7909,7 @@ func (n *runtimeJavascriptNakamaModule) groupUsersPromote(r *goja.Runtime) func(
 			callerID = cid
 		}
 
-		if err := PromoteGroupUsers(n.ctx, n.logger, n.db, n.router, callerID, groupID, userIDs); err != nil {
+		if err := PromoteGroupUsers(n.ctx, n.logger, n.db, n.router, callerID, groupID, uids); err != nil {
 			panic(r.NewGoError(fmt.Errorf("error while trying to promote users in a group: %v", err.Error())))
 		}
 
@@ -7781,29 +7934,25 @@ func (n *runtimeJavascriptNakamaModule) groupUsersDemote(r *goja.Runtime) func(g
 			panic(r.NewTypeError("expects group ID to be a valid identifier"))
 		}
 
-		users := f.Argument(1)
-		if goja.IsUndefined(users) || goja.IsNull(users) {
+		usersIn := f.Argument(1)
+		if goja.IsUndefined(usersIn) || goja.IsNull(usersIn) {
 			panic(r.NewTypeError("expects an array of user ids"))
 		}
-		usersSlice, ok := users.Export().([]interface{})
-		if !ok {
+		userIDs, err := exportToSlice[[]string](usersIn)
+		if err != nil {
 			panic(r.NewTypeError("expects an array of user ids"))
 		}
 
-		userIDs := make([]uuid.UUID, 0, len(usersSlice))
-		for _, id := range usersSlice {
-			idStr, ok := id.(string)
-			if !ok {
-				panic(r.NewTypeError("expects user id to be valid identifier"))
-			}
-			userID, err := uuid.FromString(idStr)
+		uids := make([]uuid.UUID, 0, len(userIDs))
+		for _, id := range userIDs {
+			uid, err := uuid.FromString(id)
 			if err != nil {
 				panic(r.NewTypeError("expects user id to be valid identifier"))
 			}
-			if userID == uuid.Nil {
+			if uid == uuid.Nil {
 				panic(r.NewTypeError("cannot demote the root user"))
 			}
-			userIDs = append(userIDs, userID)
+			uids = append(uids, uid)
 		}
 		if len(userIDs) == 0 {
 			return goja.Undefined()
@@ -7819,7 +7968,7 @@ func (n *runtimeJavascriptNakamaModule) groupUsersDemote(r *goja.Runtime) func(g
 			callerID = cid
 		}
 
-		if err := DemoteGroupUsers(n.ctx, n.logger, n.db, n.router, callerID, groupID, userIDs); err != nil {
+		if err := DemoteGroupUsers(n.ctx, n.logger, n.db, n.router, callerID, groupID, uids); err != nil {
 			panic(r.NewGoError(fmt.Errorf("error while trying to demote users in a group: %v", err.Error())))
 		}
 
@@ -8004,7 +8153,15 @@ func (n *runtimeJavascriptNakamaModule) localcachePut(r *goja.Runtime) func(goja
 			panic(r.NewTypeError("ttl must be 0 or more"))
 		}
 
-		n.localCache.Put(key, value.Export(), ttl)
+		v := value.Export()
+
+		switch v.(type) {
+		case string, int64, float64, bool:
+		default:
+			panic(r.NewTypeError("unsupported value type: must be string, numeric or boolean"))
+		}
+
+		n.localCache.Put(key, v, ttl)
 
 		return goja.Undefined()
 	}
@@ -8359,6 +8516,9 @@ func (n *runtimeJavascriptNakamaModule) satoriConstructor(r *goja.Runtime) (*goj
 		"experimentsList":  n.satoriExperimentsList(r),
 		"flagsList":        n.satoriFlagsList(r),
 		"liveEventsList":   n.satoriLiveEventsList(r),
+		"messagesList":     n.satoriMessagesList(r),
+		"messageUpdate":    n.satoriMessageUpdate(r),
+		"messageDelete":    n.satoriMessageDelete(r),
 	}
 
 	constructor := func(call goja.ConstructorCall) *goja.Object {
@@ -8385,17 +8545,38 @@ func (n *runtimeJavascriptNakamaModule) getSatori(r *goja.Object) func(goja.Func
 // @group satori
 // @summary Create a new identity.
 // @param id(type=string) The identifier of the identity.
+// @param properties(type=nkruntime.AuthPropertiesUpdate, optional=true, default=null) Opt. Properties to update.
+// @param ip(type=string, optional=true, default="") An optional client IP address to pass on to Satori for geo-IP lookup.
 // @return error(error) An optional error value if an error occurred.
 func (n *runtimeJavascriptNakamaModule) satoriAuthenticate(r *goja.Runtime) func(goja.FunctionCall) goja.Value {
 	return func(f goja.FunctionCall) goja.Value {
 		id := getJsString(r, f.Argument(0))
 
-		var ip string
+		var props map[string]any
 		if f.Argument(1) != goja.Undefined() && f.Argument(1) != goja.Null() {
-			ip = getJsString(r, f.Argument(1))
+			var ok bool
+			props, ok = f.Argument(1).Export().(map[string]any)
+			if !ok {
+				panic(r.NewTypeError("expects properties must be an object"))
+			}
 		}
 
-		if err := n.satori.Authenticate(n.ctx, id, ip); err != nil {
+		var defPropsMap, customPropsMap map[string]string
+		defaultProps, ok := props["default"]
+		if ok {
+			defPropsMap = getJsStringMap(r, r.ToValue(defaultProps))
+		}
+		customProps, ok := props["custom"]
+		if ok {
+			customPropsMap = getJsStringMap(r, r.ToValue(customProps))
+		}
+
+		var ip string
+		if f.Argument(2) != goja.Undefined() && f.Argument(2) != goja.Null() {
+			ip = getJsString(r, f.Argument(2))
+		}
+
+		if err := n.satori.Authenticate(n.ctx, id, defPropsMap, customPropsMap, ip); err != nil {
 			n.logger.Error("Failed to Satori Authenticate.", zap.Error(err))
 			panic(r.NewGoError(fmt.Errorf("failed to satori authenticate: %s", err.Error())))
 		}
@@ -8406,7 +8587,7 @@ func (n *runtimeJavascriptNakamaModule) satoriAuthenticate(r *goja.Runtime) func
 // @group satori
 // @summary Get identity properties.
 // @param id(type=string) The identifier of the identity.
-// @return properties(*nkruntime.Properties) The identity properties.
+// @return properties(type=nkruntime.Properties) The identity properties.
 // @return error(error) An optional error value if an error occurred.
 func (n *runtimeJavascriptNakamaModule) satoriPropertiesGet(r *goja.Runtime) func(goja.FunctionCall) goja.Value {
 	return func(f goja.FunctionCall) goja.Value {
@@ -8477,18 +8658,14 @@ func (n *runtimeJavascriptNakamaModule) satoriPublishEvents(r *goja.Runtime) fun
 	return func(f goja.FunctionCall) goja.Value {
 		identifier := getJsString(r, f.Argument(0))
 
-		events, ok := f.Argument(1).Export().([]any)
-		if !ok {
-			panic(r.NewTypeError("expects events must be an array"))
+		eventsIn := f.Argument(1)
+		events, err := exportToSlice[[]map[string]any](eventsIn)
+		if err != nil {
+			panic(r.NewTypeError("expects array of event objects"))
 		}
 
 		evts := make([]*runtime.Event, 0, len(events))
-		for _, e := range events {
-			eMap, ok := e.(map[string]any)
-			if !ok {
-				panic(r.NewTypeError("expects event to be an object"))
-			}
-
+		for _, eMap := range events {
 			evt := &runtime.Event{}
 
 			name, ok := eMap["name"]
@@ -8558,20 +8735,12 @@ func (n *runtimeJavascriptNakamaModule) satoriExperimentsList(r *goja.Runtime) f
 		identifier := getJsString(r, f.Argument(0))
 
 		nameFilters := make([]string, 0)
-		if !goja.IsUndefined(f.Argument(1)) && !goja.IsNull(f.Argument(1)) {
-			names := f.Argument(1)
-
-			namesArray, ok := names.Export().([]any)
-			if ok {
-				for _, n := range namesArray {
-					ns, ok := n.(string)
-					if !ok {
-						panic(r.NewTypeError("expects name filter to be a string"))
-					}
-					nameFilters = append(nameFilters, ns)
-				}
-			} else {
-				panic(r.NewTypeError("expects names to be an array"))
+		nameFiltersIn := f.Argument(1)
+		if !goja.IsUndefined(nameFiltersIn) && !goja.IsNull(nameFiltersIn) {
+			var err error
+			nameFilters, err = exportToSlice[[]string](nameFiltersIn)
+			if err != nil {
+				panic(r.NewTypeError("expects an array of strings"))
 			}
 		}
 
@@ -8605,20 +8774,12 @@ func (n *runtimeJavascriptNakamaModule) satoriFlagsList(r *goja.Runtime) func(go
 		identifier := getJsString(r, f.Argument(0))
 
 		nameFilters := make([]string, 0)
-		if !goja.IsUndefined(f.Argument(1)) && !goja.IsNull(f.Argument(1)) {
-			names := f.Argument(1)
-
-			namesArray, ok := names.Export().([]any)
-			if ok {
-				for _, n := range namesArray {
-					ns, ok := n.(string)
-					if !ok {
-						panic(r.NewTypeError("expects name filter to be a string"))
-					}
-					nameFilters = append(nameFilters, ns)
-				}
-			} else {
-				panic(r.NewTypeError("expects names to be an array"))
+		nameFiltersIn := f.Argument(1)
+		if !goja.IsUndefined(nameFiltersIn) && !goja.IsNull(nameFiltersIn) {
+			var err error
+			nameFilters, err = exportToSlice[[]string](nameFiltersIn)
+			if err != nil {
+				panic(r.NewTypeError("expect array of strings"))
 			}
 		}
 
@@ -8653,20 +8814,12 @@ func (n *runtimeJavascriptNakamaModule) satoriLiveEventsList(r *goja.Runtime) fu
 		identifier := getJsString(r, f.Argument(0))
 
 		nameFilters := make([]string, 0)
-		if !goja.IsUndefined(f.Argument(1)) && !goja.IsNull(f.Argument(1)) {
-			names := f.Argument(1)
-
-			namesArray, ok := names.Export().([]any)
-			if ok {
-				for _, n := range namesArray {
-					ns, ok := n.(string)
-					if !ok {
-						panic(r.NewTypeError("expects name filter to be a string"))
-					}
-					nameFilters = append(nameFilters, ns)
-				}
-			} else {
-				panic(r.NewTypeError("expects names to be an array"))
+		nameFiltersIn := f.Argument(1)
+		if !goja.IsUndefined(nameFiltersIn) && !goja.IsNull(nameFiltersIn) {
+			var err error
+			nameFilters, err = exportToSlice[[]string](nameFiltersIn)
+			if err != nil {
+				panic(r.NewTypeError("expects an array of strings"))
 			}
 		}
 
@@ -8683,12 +8836,127 @@ func (n *runtimeJavascriptNakamaModule) satoriLiveEventsList(r *goja.Runtime) fu
 				"value":           le.Value,
 				"activeStartTime": le.ActiveStartTimeSec,
 				"activeEndTime":   le.ActiveEndTimeSec,
+				"id":              le.Id,
+				"startTime":       le.StartTimeSec,
+				"endTime":         le.EndTimeSec,
+				"duration":        le.DurationSec,
+				"resetCron":       le.ResetCronExpr,
 			})
 		}
 
 		return r.ToValue(map[string]any{
 			"liveEvents": liveEvents,
 		})
+	}
+}
+
+// @group satori
+// @summary List messages.
+// @param id(type=string) The identifier of the identity.
+// @param limit(type=int, optional=true, default=100) The max number of messages to return.
+// @param forward(type=bool, optional=true, default=true) True if listing should be older messages to newer, false if reverse.
+// @param cursor(type=string, optional=true, default="") A pagination cursor, if any.
+// @return messages(*nkruntime.Message[]) The message list.
+// @return error(error) An optional error value if an error occurred.
+func (n *runtimeJavascriptNakamaModule) satoriMessagesList(r *goja.Runtime) func(goja.FunctionCall) goja.Value {
+	return func(f goja.FunctionCall) goja.Value {
+		identifier := getJsString(r, f.Argument(0))
+
+		limit := int64(100)
+		if f.Argument(1) != goja.Undefined() && f.Argument(1) != goja.Null() {
+			limit = getJsInt(r, f.Argument(1))
+		}
+
+		forward := false
+		if f.Argument(2) != goja.Undefined() && f.Argument(2) != goja.Null() {
+			forward = getJsBool(r, f.Argument(2))
+		}
+
+		cursor := ""
+		if f.Argument(3) != goja.Undefined() && f.Argument(3) != goja.Null() {
+			cursor = getJsString(r, f.Argument(3))
+		}
+
+		messagesList, err := n.satori.MessagesList(n.ctx, identifier, int(limit), forward, cursor)
+		if err != nil {
+			panic(r.NewGoError(fmt.Errorf("failed to list satori messages %s:", err.Error())))
+		}
+
+		messages := make([]any, 0, len(messagesList.Messages))
+		for _, m := range messagesList.Messages {
+			messages = append(messages, map[string]any{
+				"scheduleId":  m.ScheduleId,
+				"sendTime":    m.SendTime,
+				"metadata":    m.Metadata,
+				"createTime":  m.CreateTime,
+				"updateTime":  m.UpdateTime,
+				"readTime":    m.ReadTime,
+				"consumeTime": m.ConsumeTime,
+				"text":        m.Text,
+				"id":          m.Id,
+				"title":       m.Title,
+				"imageUrl":    m.ImageUrl,
+			})
+		}
+
+		out := map[string]any{
+			"messages": messages,
+		}
+
+		if messagesList.PrevCursor != "" {
+			out["prevCursor"] = messagesList.PrevCursor
+		}
+		if messagesList.NextCursor != "" {
+			out["nextCursor"] = messagesList.NextCursor
+		}
+
+		return r.ToValue(out)
+	}
+}
+
+// @group satori
+// @summary Update message.
+// @param id(type=string) The identifier of the identity.
+// @param readTime(type=int) The time the message was read at the client.
+// @param consumeTime(type=int, optiona=true, default=0) The time the message was consumed by the identity.
+// @return error(error) An optional error value if an error occurred.
+func (n *runtimeJavascriptNakamaModule) satoriMessageUpdate(r *goja.Runtime) func(goja.FunctionCall) goja.Value {
+	return func(f goja.FunctionCall) goja.Value {
+		identifier := getJsString(r, f.Argument(0))
+
+		messageId := getJsString(r, f.Argument(1))
+
+		readTime := getJsInt(r, f.Argument(2))
+
+		consumeTime := int64(0)
+		if f.Argument(3) != goja.Undefined() && f.Argument(3) != goja.Null() {
+			consumeTime = getJsInt(r, f.Argument(3))
+		}
+
+		if err := n.satori.MessageUpdate(n.ctx, identifier, messageId, readTime, consumeTime); err != nil {
+			panic(r.NewGoError(fmt.Errorf("failed to update satori message %s:", err.Error())))
+		}
+
+		return goja.Undefined()
+	}
+}
+
+// @group satori
+// @summary Delete message.
+// @param id(type=string) The identifier of the identity.
+// @param messageId(type=string) The identifier of the message.
+// @return error(error) An optional error value if an error occurred.
+func (n *runtimeJavascriptNakamaModule) satoriMessageDelete(r *goja.Runtime) func(goja.FunctionCall) goja.Value {
+	return func(f goja.FunctionCall) goja.Value {
+		identifier := getJsString(r, f.Argument(0))
+
+		messageId := getJsString(r, f.Argument(1))
+
+		if err := n.satori.MessageDelete(n.ctx, identifier, messageId); err != nil {
+			panic(r.NewGoError(fmt.Errorf("failed to delete satori message %s:", err.Error())))
+		}
+
+		return goja.Undefined()
 	}
 }
 
@@ -9065,4 +9333,28 @@ func pointerizeSlices(m interface{}) {
 			}
 		}
 	}
+}
+
+func exportToSlice[S ~[]E, E any](v goja.Value) (S, error) {
+	value := v.Export()
+	slice, ok := value.([]any)
+	if !ok {
+		slicePtr, ok := value.(*[]any)
+		if !ok {
+			return nil, errors.New("invalid input: expects an array")
+		}
+		slice = *slicePtr
+	}
+
+	results := make(S, 0, len(slice))
+
+	for _, e := range slice {
+		r, ok := e.(E)
+		if !ok {
+			return nil, fmt.Errorf("invalid array entry type: %v", e)
+		}
+		results = append(results, r)
+	}
+
+	return results, nil
 }

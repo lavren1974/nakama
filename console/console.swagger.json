@@ -981,6 +981,12 @@
                 },
                 "user_id": {
                   "type": "string"
+                },
+                "session_vars": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "string"
+                  }
                 }
               },
               "title": "API Explorer request definition for CallApiEndpoint"
@@ -1029,6 +1035,12 @@
                 },
                 "user_id": {
                   "type": "string"
+                },
+                "session_vars": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "string"
+                  }
                 }
               },
               "title": "API Explorer request definition for CallApiEndpoint"
@@ -1569,6 +1581,70 @@
           {
             "name": "id",
             "description": "The unique identifier of the group.",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "Console"
+        ]
+      }
+    },
+    "/v2/console/iap/purchase/{transaction_id}": {
+      "get": {
+        "summary": "Get purchase by transaction_id",
+        "operationId": "Console_GetPurchase",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/apiValidatedPurchase"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/googlerpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "transaction_id",
+            "description": "Purchase original transaction id.",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "Console"
+        ]
+      }
+    },
+    "/v2/console/iap/subscription/{original_transaction_id}": {
+      "get": {
+        "summary": "Get subscription by original_transaction_id",
+        "operationId": "Console_GetSubscription",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/apiValidatedSubscription"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/googlerpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "original_transaction_id",
+            "description": "Subscription original transaction id.",
             "in": "path",
             "required": true,
             "type": "string"
@@ -3622,7 +3698,7 @@
           "type": "array",
           "items": {
             "type": "object",
-            "$ref": "#/definitions/apiStorageObject"
+            "$ref": "#/definitions/consoleStorageListObject"
           },
           "description": "List of storage objects matching list/filter operation."
         },
@@ -3637,6 +3713,48 @@
         }
       },
       "description": "List of storage objects."
+    },
+    "consoleStorageListObject": {
+      "type": "object",
+      "properties": {
+        "collection": {
+          "type": "string",
+          "description": "The collection which stores the object."
+        },
+        "key": {
+          "type": "string",
+          "description": "The key of the object within the collection."
+        },
+        "user_id": {
+          "type": "string",
+          "description": "The user owner of the object."
+        },
+        "version": {
+          "type": "string",
+          "description": "The version hash of the object."
+        },
+        "permission_read": {
+          "type": "integer",
+          "format": "int32",
+          "description": "The read access permissions for the object."
+        },
+        "permission_write": {
+          "type": "integer",
+          "format": "int32",
+          "description": "The write access permissions for the object."
+        },
+        "create_time": {
+          "type": "string",
+          "format": "date-time",
+          "description": "The UNIX time (for gRPC clients) or ISO string (for REST clients) when the object was created."
+        },
+        "update_time": {
+          "type": "string",
+          "format": "date-time",
+          "description": "The UNIX time (for gRPC clients) or ISO string (for REST clients) when the object was last updated."
+        }
+      },
+      "description": "An object within the storage engine."
     },
     "consoleUserList": {
       "type": "object",
@@ -4131,7 +4249,9 @@
       "type": "basic"
     },
     "BearerJwt": {
-      "type": ""
+      "type": "apiKey",
+      "name": "Authorization",
+      "in": "header"
     }
   },
   "security": [

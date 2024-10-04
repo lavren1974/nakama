@@ -97,8 +97,8 @@ func (g *LocalGoogleRefundScheduler) Start(runtime *Runtime) {
 					}
 
 					for _, vr := range voidedReceipts {
-						purchase, err := GetPurchaseByTransactionId(g.ctx, g.db, vr.PurchaseToken)
-						if err != nil && err != sql.ErrNoRows {
+						purchase, err := GetPurchaseByTransactionId(g.ctx, g.logger, g.db, vr.PurchaseToken)
+						if err != nil {
 							g.logger.Error("Failed to get purchase by transaction_id", zap.Error(err), zap.String("purchase_token", vr.PurchaseToken))
 							continue
 						}
@@ -107,6 +107,11 @@ func (g *LocalGoogleRefundScheduler) Start(runtime *Runtime) {
 							// Refunded purchase.
 							if purchase.RefundTime.Seconds != 0 {
 								// Purchase refund already handled, skip it.
+								continue
+							}
+
+							if purchase.UserId == "" {
+								// Purchase belongs to a deleted user.
 								continue
 							}
 
@@ -165,7 +170,7 @@ func (g *LocalGoogleRefundScheduler) Start(runtime *Runtime) {
 								}
 							}
 						} else {
-							subscription, err := getSubscriptionByOriginalTransactionId(g.ctx, g.db, vr.PurchaseToken)
+							subscription, err := getSubscriptionByOriginalTransactionId(g.ctx, g.logger, g.db, vr.PurchaseToken)
 							if err != nil && err != sql.ErrNoRows {
 								g.logger.Error("Failed to get subscription by original_transaction_id", zap.Error(err), zap.String("original_transaction_id", vr.PurchaseToken))
 								continue
@@ -173,6 +178,11 @@ func (g *LocalGoogleRefundScheduler) Start(runtime *Runtime) {
 
 							if subscription == nil {
 								// No subscription was found.
+								continue
+							}
+
+							if subscription.UserId == "" {
+								// Subscription belongs to a deleted user.
 								continue
 							}
 
